@@ -1,167 +1,224 @@
-# Face Recognition with Real-time Tracking
+# Face Locking Recognition System
 
-A real-time face recognition system with face locking capabilities, designed to identify and track specific individuals while monitoring their actions.
+A real-time face recognition project for enrolling people, recognizing them from a camera, locking onto a selected face, logging face-lock actions, and optionally steering an ESP8266 servo camera over MQTT.
 
-## Core Features
-- **Face Recognition**: 
-  - Real-time face detection and identification
-  - Multi-person support
-  - High accuracy with ArcFace embeddings
+The project is CPU-first. It works with the normal `onnxruntime` package, so people without GPUs do not need CUDA, cuDNN, or `onnxruntime-gpu`.
 
-- **Face Locking**:
-  - Track specific individuals in real-time
-  - Monitor head movements (left/right)
-  - Detect smiles and facial expressions
-  - Automatic action logging with timestamps
+## Project Layout
 
-## Setup
+- `src/enroll.py` - capture face samples and build the face database.
+- `src/recognize.py` - run local face recognition and face locking.
+- `src/rebuild_db.py` - rebuild `data/db/face_db.npz` from existing enrollment crops.
+- `addons/mqtt_servo_tracking/recognize_mqtt.py` - face locking plus MQTT movement/status publishing.
+- `addons/mqtt_servo_tracking/esp8266/face_tracker_servo/face_tracker_servo.ino` - ESP8266 servo firmware.
+- `dashboard/index.html` - static MQTT dashboard for live movement and lock status.
+- `logs/` - action history files created during face-lock sessions.
 
-**Python version:** Use **Python 3.10, 3.11, 3.12, or 3.13**. Python 3.14 is not yet supported (e.g. `onnxruntime` has no wheels for 3.14).
+## Requirements
 
-1. **Install Dependencies**:
+Use Python 3.10, 3.11, 3.12, or 3.13. Python 3.14 is not recommended because some computer-vision packages may not have wheels for it yet.
+
+Install dependencies from the repo root:
+
+```bash
+pip install -r requirements.txt
+```
+
+The included requirements use:
+
+```text
+onnxruntime
+```
+
+That is the CPU ONNX Runtime package. If only CPU ONNX Runtime is installed, the recognizer automatically uses `CPUExecutionProvider`.
+
+Required model files:
+
+- `models/embedder_arcface.onnx`
+- `models/face_landmarker.task`
+
+## Quick Start
+
+1. Install dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
-   
-   **Note for GPU acceleration:** The requirements include `onnxruntime-gpu` for NVIDIA GPU support. If you prefer CPU-only, you can replace it with `onnxruntime` in `requirements.txt`.
 
-2. **Models**:
-   Ensure the following models are in the `models/` directory:
-   - `embedder_arcface.onnx` (ArcFace recognition)
-   - `face_landmarker.task` (MediaPipe FaceMesh)
+2. Put the required model files in `models/`.
 
-## Usage
+3. Enroll a person:
 
-### 1. Enrollment
-Enroll new identities by capturing face samples from the camera.
-```bash
-python -m src.enroll
-```
-- **Controls**:
-  - `SPACE`: Capture a single sample.
-  - `a`: Toggle auto-capture.
-  - `s`: Save enrollment to database.
-  - `q`: Quit.
+   ```bash
+   python -m src.enroll
+   ```
 
-**Rebuilding Database from Existing Crops:**
-If you have enrollment crops in `data/enroll/` but the database is missing or outdated, you can rebuild it:
-```bash
-python -m src.rebuild_db
-```
-This scans all person folders in `data/enroll/`, re-embeds their crops, and rebuilds the database. Useful if multiple people were enrolled but only some are in the database.
+   Controls:
 
-### 2. Recognition
-Run real-time multi-face recognition with face locking and action tracking.
-```bash
-python -m src.recognize
-```
+   - `SPACE` - capture one sample.
+   - `a` - toggle auto-capture.
+   - `s` - save enrollment to the database.
+   - `q` - quit.
 
-**Execution Provider Selection:**
-On startup, you'll be prompted to choose CPU or GPU acceleration:
-- **GPU (DirectML)**: **Recommended** - Works with AMD/NVIDIA/Intel GPUs on Windows, no CUDA version conflicts
-- **GPU (CUDA)**: Fastest for NVIDIA GPUs (requires CUDA 12.x - may have version conflicts)
-- **CPU**: Compatible everywhere, slower but more stable
+4. Rebuild the database if you already have crops in `data/enroll/`:
 
-**Note:** If you see CUDA errors about missing DLLs (e.g., `cublasLt64_12.dll`), use DirectML instead. It works with your GPU without CUDA version issues.
+   ```bash
+   python -m src.rebuild_db
+   ```
 
-**Camera Resolution:**
-With GPU acceleration, the system uses 1280x720 by default (configurable in code). Higher resolution improves face detection quality. The GPU can handle 1920x1080 if your camera supports it.
+5. Run local recognition:
 
-**Controls**:
-  - `+/-`: Adjust distance threshold live (default: 0.40, lower = stricter).
-  - `r`: Reload database from disk.
-  - `d`: Toggle debug overlay.
-  - `l`: Lock/unlock the currently recognized face.
-  - `q`: Quit.
+   ```bash
+   python -m src.recognize
+   ```
 
-**Accuracy Tips:**
-- The system uses temporal smoothing (averaging recent embeddings) for more stable recognition.
-- If faces aren't recognized, try increasing the threshold with `+` key.
-- If you get false positives, decrease the threshold with `-` key.
-- Default threshold (0.40) balances accuracy and recall - adjust based on your needs.
+   Controls:
 
-#### Face Locking Features
-- Lock onto a specific person by pressing `l` when their face is detected
-- The system will track the locked face and log their actions
-- Actions include:
-  - Head movements (left/right)
-  - Smile detection
-  - Face locking/unlocking events
-- All actions are timestamped and saved to `logs/[Name]_history_[timestamp].txt`
+   - `+` or `=` - increase the recognition distance threshold.
+   - `-` - decrease the threshold.
+   - `r` - reload the face database.
+   - `d` - toggle debug overlay.
+   - `l` - lock or unlock the selected recognized face.
+   - `q` - quit.
 
-### 3. Evaluation
-Evaluate the model's performance on enrolled crops and find the optimal threshold.
-```bash
-python -m src.evaluate
+## CPU And GPU Notes
+
+For CPU-only users, keep `onnxruntime` in `requirements.txt`. No separate CPU-only Python files are needed.
+
+When the app starts, it checks ONNX Runtime providers. If only CPU is available, it selects CPU automatically. If GPU-capable ONNX Runtime packages are installed, it prompts for a provider and keeps CPU as a fallback.
+
+Optional GPU setups:
+
+- NVIDIA CUDA: use `onnxruntime-gpu` in a GPU-specific environment.
+- Windows DirectML: use `onnxruntime-directml` in a GPU-specific environment.
+
+Avoid installing multiple ONNX Runtime variants into the same environment unless you know they are compatible.
+
+## Face Locking
+
+During recognition, press `l` when a known face is selected. The app locks onto that identity, tracks movement, and records actions such as:
+
+- Face locked or unlocked.
+- Head moved left or right.
+- Smile or blink events detected from landmarks.
+- Face temporarily lost or reacquired.
+
+History files are written to `logs/` as:
+
+```text
+[Name]_history_[timestamp].txt
 ```
 
-### 4. Demos
-Visualize embeddings or detection/landmarks:
-```bash
-python -m src.embed    # Embedding heatmap visualization
-python -m src.haar_5pt  # Detection and landmark visualization
+Example line:
+
+```text
+2026-01-31 13:20:20.225528 - HEAD_RIGHT: Moved right by 31.9px
 ```
 
-## Face Locking System
+## MQTT Servo Addon
 
-### How Face Locking Works
-1. **Activation**: 
-   - Press 'l' when a recognized face is on screen
-   - The system will lock onto the closest recognized face
-   - A visual indicator (orange border) shows the locked face
+The MQTT addon keeps the original recognizer separate and publishes servo commands for the ESP8266.
 
-2. **Tracking**:
-   - The system continues to track the locked face even if other faces appear
-   - If the face is temporarily lost, the system will try to reacquire it for 2 seconds
-   - The lock is automatically released if the face is not found after this period
+Run it from the repo root:
 
-3. **Actions Detected**:
-   - **Head Movements**:
-     - Left/Right: Tracks horizontal head rotation
-     - Movement threshold: 10 pixels (adjustable)
-   - **Facial Expressions**:
-     - Smile detection: Measures mouth corner movement
-     - Smile threshold: Ratio > 1.1 (configurable)
-   - **System Events**:
-     - Face locked/unlocked
-     - Face lost/regained
-
-### History Files
-- **Location**: All logs are saved in the `logs/` directory
-- **Naming Convention**: `[Name]_history_[timestamp].txt`
-  - Example: `Bahati_history_20260131132049.txt`
-- **Log Format**:
-  ```
-  [YYYY-MM-DD HH:MM:SS.microseconds] - ACTION_TYPE: Description
-  ```
-- **Example Entries**:
-  ```
-  2026-01-31 13:20:11.324267 - FACE_LOCKED: Face locked: Bahati
-  2026-01-31 13:20:20.225528 - HEAD_RIGHT: Moved right by 31.9px
-  2026-01-31 13:20:21.684933 - SMILE: Smile detected (ratio: 14.97)
-  ```
-- **Log Management**:
-  - New log file created for each recognition session
-  - Timestamp in filename helps track different usage sessions
-  - Logs are automatically created when face locking is used
-
-### Technical Details
-- **Face Recognition**: Uses ArcFace for generating unique face embeddings
-- **Landmark Tracking**: MediaPipe FaceMesh tracks 5 key facial points
-- **Performance**: Optimized for real-time processing on CPU
-
-## MQTT + ESP8266 Servo Extension
-
-A separate extension was added in [`addons/mqtt_servo_tracking`](addons/mqtt_servo_tracking) so the original `src/recognize.py` stays unchanged.
-
-- Python app: `addons/mqtt_servo_tracking/recognize_mqtt.py`
-- Broker: `157.173.101.159`
-- Topic: `vision/teamalpha/movement`
-- Commands: `LEFT`, `RIGHT`, `CENTER`, `SEARCH`, `IDLE`
-- ESP8266 firmware: `addons/mqtt_servo_tracking/esp8266/face_tracker_servo/face_tracker_servo.ino`
-- Upload helper: `addons/mqtt_servo_tracking/esp8266/upload.ps1`
-
-Run:
 ```bash
 python addons/mqtt_servo_tracking/recognize_mqtt.py
 ```
+
+Default MQTT settings:
+
+- Broker: `157.173.101.159`
+- MQTT port: `1883`
+- Browser WebSocket URL: `ws://157.173.101.159:9001`
+- Movement topic: `vision/teamalpha/movement`
+- Status topic: `vision/teamalpha/status`
+
+Movement payloads on `vision/teamalpha/movement`:
+
+- `LEFT`
+- `RIGHT`
+- `CENTER`
+- `SEARCH`
+- `IDLE`
+
+Dashboard JSON is published on `vision/teamalpha/status`, including movement, lock state, target name, face count, horizontal error, FPS, threshold, and provider.
+
+Useful addon flags:
+
+```bash
+python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker 157.173.101.159 --mqtt-topic vision/teamalpha/movement --mqtt-status-topic vision/teamalpha/status --deadzone-px 80 --center-exit-hysteresis-px 30 --search-delay-sec 0.8 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
+```
+
+## Dashboard
+
+Open:
+
+```text
+dashboard/index.html
+```
+
+The dashboard is a static HTML file. It uses MQTT over WebSockets and defaults to:
+
+```text
+ws://157.173.101.159:9001
+```
+
+It listens to:
+
+- `vision/teamalpha/movement`
+- `vision/teamalpha/status`
+
+The page includes editable connection fields, so you can change the WebSocket URL or topics without editing the file.
+
+The broker must expose MQTT over WebSockets on port `9001` for the dashboard to connect. Plain MQTT port `1883` is for Python and ESP8266 clients, not browsers.
+
+## ESP8266 Servo Setup
+
+1. Open `addons/mqtt_servo_tracking/esp8266/face_tracker_servo/face_tracker_servo.ino`.
+2. Set `WIFI_SSID` and `WIFI_PASSWORD`.
+3. Confirm:
+
+   ```cpp
+   MQTT_SERVER = "157.173.101.159";
+   MQTT_TOPIC = "vision/teamalpha/movement";
+   ```
+
+4. Adjust servo settings for your hardware:
+
+   - `SERVO_PIN`
+   - `SERVO_MIN_ANGLE`
+   - `SERVO_MAX_ANGLE`
+   - `REVERSE_SERVO`
+
+5. Install Arduino libraries:
+
+   - `PubSubClient`
+   - `Servo` from the ESP8266 core
+
+6. Upload with `arduino-cli`:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/upload.ps1 -Port COM5
+   ```
+
+If your board is not NodeMCU v2, pass a different FQBN:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/upload.ps1 -Port COM5 -Fqbn esp8266:esp8266:d1_mini
+```
+
+## Tuning Tips
+
+- Increase `--deadzone-px` if the servo moves while the face is already centered.
+- Increase `--search-delay-sec` if brief recognition drops trigger `SEARCH` too quickly.
+- Increase `--command-confirm-frames` if `LEFT` and `RIGHT` flicker.
+- Lower the recognition threshold if false positives happen.
+- Raise the recognition threshold if known faces are not accepted.
+
+## Troubleshooting
+
+- Empty database: run `python -m src.enroll` or `python -m src.rebuild_db`.
+- Camera not available: check the camera index in the recognizer code if your webcam is not device `1`.
+- Dashboard offline: confirm the broker exposes MQTT over WebSockets at `ws://157.173.101.159:9001`.
+- ESP8266 not moving: confirm Wi-Fi credentials, broker address, topic, and Serial Monitor output.
+- CPU-only machine: keep `onnxruntime`; do not install `onnxruntime-gpu`.

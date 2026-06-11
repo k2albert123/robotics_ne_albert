@@ -45,6 +45,10 @@ def select_provider_interactive() -> List[str]:
     if not available:
         print("Warning: No providers available!")
         return ["CPUExecutionProvider"]
+
+    if available == ["CPUExecutionProvider"]:
+        print("\nONNX Runtime: CPUExecutionProvider only; using CPU.")
+        return ["CPUExecutionProvider"]
     
     print("\n" + "=" * 60)
     print("ONNX Runtime Execution Provider Selection")

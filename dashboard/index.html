@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vision Control - Face Servo MQTT Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        :root {
+            --bg: #101114;
+            --panel: #f6f0e8;
+            --panel-2: #e8eef0;
+            --ink: #15171a;
+            --muted: #6d747c;
+            --line: rgba(21, 23, 26, 0.16);
+            --green: #1f9d63;
+            --amber: #d5891d;
+            --blue: #2f6fd6;
+            --red: #ca3f3f;
+            --steel: #78818b;
+            --radius: 8px;
+            --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+            --sans: "Plus Jakarta Sans", system-ui, sans-serif;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: var(--sans);
+            color: var(--ink);
+            background:
+                linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px),
+                linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+                var(--bg);
+            background-size: 40px 40px;
+        }
+
+        .shell {
+            width: min(1180px, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 24px 0;
+        }
+
+        header {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 16px;
+            align-items: center;
+            color: #f7f2ea;
+            margin-bottom: 18px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(1.7rem, 4vw, 3.8rem);
+            line-height: 0.95;
+            letter-spacing: 0;
+        }
+
+        .subtitle {
+            margin-top: 8px;
+            color: rgba(247, 242, 234, 0.68);
+            font-family: var(--mono);
+            font-size: 0.82rem;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 132px;
+            justify-content: center;
+            padding: 10px 12px;
+            border: 1px solid rgba(247, 242, 234, 0.28);
+            border-radius: 999px;
+            color: #f7f2ea;
+            font-family: var(--mono);
+            font-size: 0.78rem;
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: var(--steel);
+        }
+
+        .connected .dot { background: var(--green); box-shadow: 0 0 0 4px rgba(31, 157, 99, 0.16); }
+        .connecting .dot { background: var(--amber); }
+        .offline .dot { background: var(--red); }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1.2fr 0.8fr;
+            gap: 14px;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: var(--radius);
+            padding: 18px;
+            box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28);
+        }
+
+        .panel.blue { background: var(--panel-2); }
+
+        .panel-title {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 18px;
+            color: var(--muted);
+            font-family: var(--mono);
+            font-size: 0.76rem;
+            text-transform: uppercase;
+        }
+
+        .movement {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 18px;
+            align-items: end;
+        }
+
+        .movement-value {
+            font-family: var(--mono);
+            font-size: clamp(3rem, 14vw, 8.6rem);
+            line-height: 0.85;
+            font-weight: 600;
+            letter-spacing: 0;
+        }
+
+        .movement-value.LEFT { color: var(--amber); }
+        .movement-value.RIGHT { color: var(--blue); }
+        .movement-value.CENTER { color: var(--green); }
+        .movement-value.SEARCH { color: var(--red); }
+        .movement-value.IDLE { color: var(--steel); }
+
+        .servo-track {
+            position: relative;
+            height: 16px;
+            margin-top: 26px;
+            border-radius: 999px;
+            background: rgba(21, 23, 26, 0.16);
+            overflow: hidden;
+        }
+
+        .servo-track::before {
+            content: "";
+            position: absolute;
+            inset: 0 50%;
+            border-left: 2px solid rgba(21, 23, 26, 0.3);
+        }
+
+        .servo-knob {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            background: var(--steel);
+            border: 4px solid var(--panel);
+            transform: translate(-50%, -50%);
+            transition: left 180ms ease, background 180ms ease;
+        }
+
+        .servo-knob.LEFT { left: 16%; background: var(--amber); }
+        .servo-knob.RIGHT { left: 84%; background: var(--blue); }
+        .servo-knob.CENTER { left: 50%; background: var(--green); }
+        .servo-knob.SEARCH { left: 50%; background: var(--red); animation: scan 1.1s ease-in-out infinite; }
+        .servo-knob.IDLE { left: 50%; background: var(--steel); }
+
+        @keyframes scan {
+            0%, 100% { left: 18%; }
+            50% { left: 82%; }
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-top: 18px;
+        }
+
+        .metric {
+            min-height: 86px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.42);
+        }
+
+        .metric span {
+            display: block;
+            color: var(--muted);
+            font-family: var(--mono);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .metric strong {
+            display: block;
+            font-family: var(--mono);
+            font-size: 1.15rem;
+            overflow-wrap: anywhere;
+        }
+
+        .lock-state {
+            font-size: clamp(2rem, 8vw, 4.4rem);
+            line-height: 0.95;
+            font-weight: 700;
+            margin: 10px 0 14px;
+        }
+
+        .target-name {
+            min-height: 38px;
+            color: var(--muted);
+            font-family: var(--mono);
+            overflow-wrap: anywhere;
+        }
+
+        .controls {
+            display: grid;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        label {
+            display: grid;
+            gap: 6px;
+            color: var(--muted);
+            font-family: var(--mono);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        input {
+            width: 100%;
+            min-height: 40px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            padding: 9px 10px;
+            background: rgba(255,255,255,0.58);
+            color: var(--ink);
+            font-family: var(--mono);
+            font-size: 0.82rem;
+        }
+
+        button {
+            min-height: 42px;
+            border: 0;
+            border-radius: var(--radius);
+            background: var(--ink);
+            color: #fffaf1;
+            font-family: var(--mono);
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        button:hover { filter: brightness(1.12); }
+
+        .log {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: grid;
+            gap: 8px;
+            max-height: 360px;
+            overflow: auto;
+        }
+
+        .log li {
+            display: grid;
+            grid-template-columns: 76px 1fr;
+            gap: 10px;
+            padding: 10px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: rgba(255,255,255,0.38);
+            font-family: var(--mono);
+            font-size: 0.78rem;
+        }
+
+        .time { color: var(--muted); }
+
+        @media (max-width: 860px) {
+            header,
+            .grid,
+            .movement {
+                grid-template-columns: 1fr;
+            }
+
+            .metrics { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 520px) {
+            .shell { width: min(100% - 20px, 1180px); padding-top: 16px; }
+            .panel { padding: 14px; }
+            .metrics { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <main class="shell">
+        <header>
+            <div>
+                <h1>Vision Control</h1>
+                <div class="subtitle">MQTT live feed - vision/teamalpha</div>
+            </div>
+            <div id="connectionPill" class="pill connecting">
+                <span class="dot"></span>
+                <span id="connectionText">Connecting</span>
+            </div>
+        </header>
+
+        <section class="grid">
+            <div class="panel">
+                <div class="panel-title">
+                    <span>Servo command</span>
+                    <span id="lastSeen">No messages</span>
+                </div>
+                <div class="movement">
+                    <div id="movementValue" class="movement-value IDLE">IDLE</div>
+                    <div class="metric">
+                        <span>Messages</span>
+                        <strong id="messageCount">0</strong>
+                    </div>
+                </div>
+                <div class="servo-track" aria-hidden="true">
+                    <div id="servoKnob" class="servo-knob IDLE"></div>
+                </div>
+
+                <div class="metrics">
+                    <div class="metric">
+                        <span>Faces</span>
+                        <strong id="facesValue">0</strong>
+                    </div>
+                    <div class="metric">
+                        <span>Error X</span>
+                        <strong id="errorValue">0 px</strong>
+                    </div>
+                    <div class="metric">
+                        <span>FPS</span>
+                        <strong id="fpsValue">-</strong>
+                    </div>
+                    <div class="metric">
+                        <span>Threshold</span>
+                        <strong id="thresholdValue">-</strong>
+                    </div>
+                </div>
+            </div>
+
+            <aside class="panel blue">
+                <div class="panel-title">
+                    <span>Face lock</span>
+                    <span id="providerValue">-</span>
+                </div>
+                <div id="lockState" class="lock-state">Unlocked</div>
+                <div id="targetName" class="target-name">Target: none</div>
+
+                <div class="controls">
+                    <label>
+                        MQTT WebSocket URL
+                        <input id="wsUrlInput" type="text" value="ws://157.173.101.159:9001">
+                    </label>
+                    <label>
+                        Movement topic
+                        <input id="movementTopicInput" type="text" value="vision/teamalpha/movement">
+                    </label>
+                    <label>
+                        Status topic
+                        <input id="statusTopicInput" type="text" value="vision/teamalpha/status">
+                    </label>
+                    <button id="connectButton" type="button">Reconnect</button>
+                </div>
+            </aside>
+
+            <div class="panel blue">
+                <div class="panel-title">
+                    <span>Event stream</span>
+                    <span id="topicValue">vision/teamalpha/status</span>
+                </div>
+                <ul id="eventLog" class="log" role="log"></ul>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const MAX_LOG_ITEMS = 80;
+
+        const els = {
+            pill: document.getElementById("connectionPill"),
+            connectionText: document.getElementById("connectionText"),
+            lastSeen: document.getElementById("lastSeen"),
+            movementValue: document.getElementById("movementValue"),
+            servoKnob: document.getElementById("servoKnob"),
+            messageCount: document.getElementById("messageCount"),
+            facesValue: document.getElementById("facesValue"),
+            errorValue: document.getElementById("errorValue"),
+            fpsValue: document.getElementById("fpsValue"),
+            thresholdValue: document.getElementById("thresholdValue"),
+            providerValue: document.getElementById("providerValue"),
+            lockState: document.getElementById("lockState"),
+            targetName: document.getElementById("targetName"),
+            wsUrlInput: document.getElementById("wsUrlInput"),
+            movementTopicInput: document.getElementById("movementTopicInput"),
+            statusTopicInput: document.getElementById("statusTopicInput"),
+            connectButton: document.getElementById("connectButton"),
+            eventLog: document.getElementById("eventLog"),
+            topicValue: document.getElementById("topicValue"),
+        };
+
+        let client = null;
+        let messageCount = 0;
+        let movementTopic = els.movementTopicInput.value;
+        let statusTopic = els.statusTopicInput.value;
+
+        function setConnectionState(state, text) {
+            els.pill.className = "pill " + state;
+            els.connectionText.textContent = text;
+        }
+
+        function connect() {
+            if (!window.mqtt) {
+                setConnectionState("offline", "MQTT.js missing");
+                addLog("system", "MQTT.js could not load");
+                return;
+            }
+
+            if (client) {
+                client.end(true);
+                client = null;
+            }
+
+            const wsUrl = els.wsUrlInput.value.trim();
+            movementTopic = els.movementTopicInput.value.trim();
+            statusTopic = els.statusTopicInput.value.trim();
+            els.topicValue.textContent = statusTopic;
+
+            setConnectionState("connecting", "Connecting");
+            addLog("system", "connecting " + wsUrl);
+
+            client = mqtt.connect(wsUrl, {
+                clientId: "vision-dashboard-" + Math.random().toString(16).slice(2),
+                clean: true,
+                keepalive: 30,
+                reconnectPeriod: 3000,
+                connectTimeout: 8000,
+            });
+
+            client.on("connect", () => {
+                setConnectionState("connected", "Live");
+                client.subscribe([movementTopic, statusTopic], { qos: 0 }, (err) => {
+                    if (err) addLog("system", "subscribe failed");
+                    else addLog("system", "subscribed");
+                });
+            });
+
+            client.on("reconnect", () => setConnectionState("connecting", "Reconnecting"));
+            client.on("close", () => setConnectionState("offline", "Offline"));
+            client.on("error", (err) => addLog("error", err.message || "MQTT error"));
+            client.on("message", handleMqttMessage);
+        }
+
+        function handleMqttMessage(topic, payloadBuffer) {
+            const payload = new TextDecoder().decode(payloadBuffer).trim();
+            messageCount += 1;
+            els.messageCount.textContent = String(messageCount);
+            els.lastSeen.textContent = new Date().toLocaleTimeString();
+
+            if (topic === movementTopic) {
+                setMovement(payload);
+                addLog("movement", payload);
+                return;
+            }
+
+            if (topic === statusTopic) {
+                try {
+                    const status = JSON.parse(payload);
+                    updateStatus(status);
+                } catch (err) {
+                    addLog("status", "invalid JSON");
+                }
+            }
+        }
+
+        function updateStatus(status) {
+            if (status.movement) setMovement(String(status.movement));
+
+            els.facesValue.textContent = String(status.faces ?? 0);
+            els.errorValue.textContent = formatNumber(status.error_x, 1) + " px";
+            els.fpsValue.textContent = status.fps == null ? "-" : formatNumber(status.fps, 1);
+            els.thresholdValue.textContent = status.threshold == null ? "-" : formatNumber(status.threshold, 3);
+            els.providerValue.textContent = status.provider || "-";
+
+            const locked = Boolean(status.locked);
+            els.lockState.textContent = locked ? "Locked" : "Unlocked";
+            els.targetName.textContent = "Target: " + (status.target || "none");
+
+            const found = status.locked_face_found ? "found" : "not found";
+            addLog("status", `${status.movement || "UNKNOWN"} / ${locked ? status.target || "locked" : "unlocked"} / ${found}`);
+        }
+
+        function setMovement(command) {
+            const clean = String(command || "IDLE").toUpperCase();
+            const known = ["LEFT", "RIGHT", "CENTER", "SEARCH", "IDLE"].includes(clean) ? clean : "IDLE";
+            els.movementValue.textContent = known;
+            els.movementValue.className = "movement-value " + known;
+            els.servoKnob.className = "servo-knob " + known;
+        }
+
+        function addLog(kind, text) {
+            const item = document.createElement("li");
+            const stamp = document.createElement("span");
+            const body = document.createElement("span");
+            stamp.className = "time";
+            stamp.textContent = new Date().toLocaleTimeString();
+            body.textContent = `${kind}: ${text}`;
+            item.append(stamp, body);
+            els.eventLog.prepend(item);
+            while (els.eventLog.children.length > MAX_LOG_ITEMS) {
+                els.eventLog.removeChild(els.eventLog.lastChild);
+            }
+        }
+
+        function formatNumber(value, digits) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return "0";
+            return num.toFixed(digits);
+        }
+
+        els.connectButton.addEventListener("click", connect);
+        connect();
+    </script>
+</body>
+</html>

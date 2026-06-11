@@ -2,6 +2,6 @@ numpy
 opencv-python
 tqdm
 mediapipe
-onnxruntime-gpu
+onnxruntime
 scipy
 paho-mqtt

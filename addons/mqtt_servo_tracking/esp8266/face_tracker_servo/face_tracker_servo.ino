@@ -4,11 +4,11 @@
 #include <Servo.h>
 
 // Wi-Fi settings
-const char* WIFI_SSID = "FARANUX-ELECTRONICS-2G";
-const char* WIFI_PASSWORD = "2025faranux2017";
+const char* WIFI_SSID = "Shin";
+const char* WIFI_PASSWORD = "password";
 
 // MQTT settings
-const char* MQTT_SERVER = "broker.hivemq.com";
+const char* MQTT_SERVER = "157.173.101.159";
 const uint16_t MQTT_PORT = 1883;
 const char* MQTT_TOPIC = "vision/teamalpha/movement";
 const char* MQTT_CLIENT_ID = "teamalpha-face-servo";

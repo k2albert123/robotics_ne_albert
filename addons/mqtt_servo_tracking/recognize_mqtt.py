@@ -19,6 +19,7 @@ Since embeddings are L2-normalized, cosine_similarity = dot(a,b).
 """
 from __future__ import annotations
 import argparse
+import json
 import time
 import os
 import sys
@@ -524,6 +525,9 @@ MOVEMENT_RIGHT = "RIGHT"
 MOVEMENT_CENTER = "CENTER"
 MOVEMENT_SEARCH = "SEARCH"
 MOVEMENT_IDLE = "IDLE"
+DEFAULT_MQTT_BROKER = "157.173.101.159"
+DEFAULT_MOVEMENT_TOPIC = "vision/teamalpha/movement"
+DEFAULT_STATUS_TOPIC = "vision/teamalpha/status"
 
 
 def compute_face_error_x(kps: np.ndarray, frame_width: int) -> float:
@@ -549,19 +553,48 @@ def command_from_error_with_hysteresis(
     return MOVEMENT_RIGHT
 
 
+def build_dashboard_status(
+    movement_command: str,
+    movement_error_x: float,
+    face_lock: Optional[FaceLock],
+    faces_count: int,
+    locked_face_found: bool,
+    fps: Optional[float],
+    threshold: float,
+    provider_name: str,
+) -> Dict[str, object]:
+    return {
+        "timestamp": time.time(),
+        "movement": movement_command,
+        "error_x": round(float(movement_error_x), 2),
+        "locked": face_lock is not None,
+        "target": face_lock.target_name if face_lock else None,
+        "locked_face_found": bool(locked_face_found),
+        "faces": int(faces_count),
+        "fps": round(float(fps), 2) if fps is not None else None,
+        "threshold": round(float(threshold), 3),
+        "provider": provider_name,
+    }
+
+
 class MqttMovementPublisher:
     def __init__(
         self,
         broker_host: str,
         broker_port: int,
         topic: str,
+        status_topic: str,
         client_id: str,
         min_publish_interval: float = 0.15,
+        status_min_publish_interval: float = 0.25,
     ):
         self.topic = topic
+        self.status_topic = status_topic
         self.min_publish_interval = float(max(0.0, min_publish_interval))
+        self.status_min_publish_interval = float(max(0.0, status_min_publish_interval))
         self.last_command: Optional[str] = None
         self.last_publish_at = 0.0
+        self.last_status_publish_at = 0.0
         self.connected = False
 
         if mqtt is None:
@@ -577,7 +610,9 @@ class MqttMovementPublisher:
     def _on_connect(self, _client, _userdata, _flags, rc, _properties=None):
         self.connected = (rc == 0)
         if self.connected:
-            print(f"[MQTT] Connected to broker, publishing on topic '{self.topic}'")
+            print(f"[MQTT] Connected to broker")
+            print(f"[MQTT] Movement topic: {self.topic}")
+            print(f"[MQTT] Status topic: {self.status_topic}")
         else:
             print(f"[MQTT] Connect failed with code {rc}")
 
@@ -610,6 +645,18 @@ class MqttMovementPublisher:
             self.last_command = command
             self.last_publish_at = now
 
+    def publish_status(self, status: Dict[str, object], force: bool = False):
+        now = time.time()
+        if not force and (now - self.last_status_publish_at) < self.status_min_publish_interval:
+            return
+        if not self.connected:
+            return
+
+        payload = json.dumps(status, separators=(",", ":"))
+        info = self.client.publish(self.status_topic, payload=payload, qos=0, retain=False)
+        if info.rc == mqtt.MQTT_ERR_SUCCESS:
+            self.last_status_publish_at = now
+
     def close(self):
         try:
             self.client.loop_stop()
@@ -622,12 +669,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Face lock tracking with MQTT direction publishing for ESP8266 servo control.",
     )
-    parser.add_argument("--mqtt-broker", default="broker.hivemq.com", help="MQTT broker host/IP.")
+    parser.add_argument("--mqtt-broker", default=DEFAULT_MQTT_BROKER, help="MQTT broker host/IP.")
     parser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT broker port.")
     parser.add_argument(
         "--mqtt-topic",
-        default="vision/teamalpha/movement",
+        default=DEFAULT_MOVEMENT_TOPIC,
         help="MQTT topic to publish movement commands.",
+    )
+    parser.add_argument(
+        "--mqtt-status-topic",
+        default=DEFAULT_STATUS_TOPIC,
+        help="MQTT topic to publish dashboard status JSON.",
     )
     parser.add_argument(
         "--mqtt-client-id",
@@ -671,6 +723,12 @@ def parse_args() -> argparse.Namespace:
         help="Minimum seconds between repeated identical MQTT commands.",
     )
     parser.add_argument(
+        "--mqtt-status-min-interval",
+        type=float,
+        default=0.25,
+        help="Minimum seconds between dashboard status MQTT messages.",
+    )
+    parser.add_argument(
         "--disable-mqtt",
         action="store_true",
         help="Run face lock tracking without MQTT publishing.",
@@ -698,6 +756,8 @@ def main():
     args.error_smooth_alpha = float(max(0.01, min(1.0, args.error_smooth_alpha)))
     args.command_confirm_frames = int(max(1, args.command_confirm_frames))
     args.search_delay_sec = float(max(0.0, args.search_delay_sec))
+    args.mqtt_min_interval = float(max(0.0, args.mqtt_min_interval))
+    args.mqtt_status_min_interval = float(max(0.0, args.mqtt_status_min_interval))
     args.center_exit_hysteresis_px = float(max(0.0, args.center_exit_hysteresis_px))
     db_path = Path("data/db/face_db.npz")
     os.makedirs("logs", exist_ok=True)
@@ -733,7 +793,7 @@ def main():
     # Default threshold 0.40 for better recall (can be adjusted with +/-)
     matcher = FaceDBMatcher(db=db, dist_thresh=0.40)
     
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         print("Camera not available")
         det.close()
@@ -763,6 +823,8 @@ def main():
         if not args.disable_mqtt
         else "MQTT movement publishing disabled"
     )
+    if not args.disable_mqtt:
+        print(f"MQTT dashboard status topic: {args.mqtt_status_topic}")
     t0 = time.time()
     frames = 0
     fps: Optional[float] = None
@@ -786,8 +848,10 @@ def main():
                 broker_host=args.mqtt_broker,
                 broker_port=args.mqtt_port,
                 topic=args.mqtt_topic,
+                status_topic=args.mqtt_status_topic,
                 client_id=args.mqtt_client_id,
                 min_publish_interval=args.mqtt_min_interval,
+                status_min_publish_interval=args.mqtt_status_min_interval,
             )
             mqtt_publisher.publish(MOVEMENT_IDLE, force=True)
         except Exception as e:
@@ -1054,6 +1118,18 @@ def main():
 
             if mqtt_publisher is not None:
                 mqtt_publisher.publish(movement_command)
+                mqtt_publisher.publish_status(
+                    build_dashboard_status(
+                        movement_command=movement_command,
+                        movement_error_x=movement_error_x,
+                        face_lock=face_lock,
+                        faces_count=len(faces),
+                        locked_face_found=locked_face_found,
+                        fps=fps,
+                        threshold=matcher.dist_thresh,
+                        provider_name=provider_name,
+                    )
+                )
             
             # Draw UI elements with proper spacing and modern styling
             y_offset = 35
@@ -1179,6 +1255,22 @@ def main():
     finally:
         if mqtt_publisher is not None:
             mqtt_publisher.publish(MOVEMENT_IDLE, force=True)
+            mqtt_publisher.publish_status(
+                {
+                    "timestamp": time.time(),
+                    "movement": MOVEMENT_IDLE,
+                    "error_x": 0.0,
+                    "locked": False,
+                    "target": None,
+                    "locked_face_found": False,
+                    "faces": 0,
+                    "fps": None,
+                    "threshold": round(float(matcher.dist_thresh), 3),
+                    "provider": provider_name,
+                    "shutdown": True,
+                },
+                force=True,
+            )
             mqtt_publisher.close()
         det.close()
         cap.release()
