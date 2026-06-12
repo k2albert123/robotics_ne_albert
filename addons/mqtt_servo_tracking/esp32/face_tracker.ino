@@ -9,10 +9,10 @@ const char* WIFI_PASSWORD = "";
 // =========================
 // MQTT Settings
 // =========================
-const char* MQTT_SERVER = "157.173.101.159";
+const char* MQTT_SERVER = "broker.hivemq.com";
 const uint16_t MQTT_PORT = 1883;
 
-const char* MQTT_TOPIC = "vision/teamalpha/movement1";
+const char* MQTT_TOPIC = "vision/Dieudonne/ne/movement";
 const char* MQTT_CLIENT_ID = "teamalpha-face-servo";
 
 // =========================
@@ -23,12 +23,14 @@ const uint8_t SERVO_PIN = 18; // Recommended ESP32 pin
 const int SERVO_MIN_ANGLE = 0;
 const int SERVO_MAX_ANGLE = 180;
 const int SERVO_CENTER_ANGLE = 90;
+const int SERVO_MIN_PULSE_US = 500;
+const int SERVO_MAX_PULSE_US = 2400;
 
-const int TRACK_STEP = 1;
-const int SEARCH_STEP = 2;
+const float TRACK_STEP = 0.35f;
+const float SCAN_STEP = 0.50f;
 
-const unsigned long TRACK_INTERVAL_MS = 55;
-const unsigned long SEARCH_INTERVAL_MS = 70;
+const unsigned long TRACK_INTERVAL_MS = 18;
+const unsigned long SCAN_INTERVAL_MS = 24;
 const unsigned long COMMAND_TIMEOUT_MS = 800;
 
 const bool REVERSE_SERVO = true;
@@ -41,7 +43,8 @@ enum MovementCommand {
   CMD_LEFT,
   CMD_RIGHT,
   CMD_CENTER,
-  CMD_SEARCH
+  CMD_HOME,
+  CMD_SCAN
 };
 
 // =========================
@@ -56,7 +59,7 @@ Servo panServo;
 // =========================
 MovementCommand currentCommand = CMD_IDLE;
 
-int servoAngle = SERVO_CENTER_ANGLE;
+float servoAngle = SERVO_CENTER_ANGLE;
 int sweepDirection = 1;
 
 unsigned long lastMoveAt = 0;
@@ -67,11 +70,26 @@ unsigned long lastCommandAt = 0;
 // Servo Functions
 // ======================================================
 
-void setServoAngle(int angle) {
-  angle = constrain(angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+int angleToPulse(float angle) {
+  float normalized =
+      (angle - SERVO_MIN_ANGLE) /
+      float(SERVO_MAX_ANGLE - SERVO_MIN_ANGLE);
+
+  return SERVO_MIN_PULSE_US +
+      int((normalized * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)) + 0.5f);
+}
+
+void setServoAngle(float angle) {
+  if (angle < SERVO_MIN_ANGLE) {
+    angle = SERVO_MIN_ANGLE;
+  }
+
+  if (angle > SERVO_MAX_ANGLE) {
+    angle = SERVO_MAX_ANGLE;
+  }
 
   servoAngle = angle;
-  panServo.write(servoAngle);
+  panServo.writeMicroseconds(angleToPulse(servoAngle));
 }
 
 void applyTrackingStep(int logicalDirection) {
@@ -110,8 +128,12 @@ MovementCommand parseCommand(String message) {
     return CMD_CENTER;
   }
 
-  if (message == "SEARCH") {
-    return CMD_SEARCH;
+  if (message == "HOME") {
+    return CMD_HOME;
+  }
+
+  if (message == "SCAN") {
+    return CMD_SCAN;
   }
 
   if (message == "IDLE") {
@@ -271,9 +293,16 @@ void handleServo() {
   }
 
   // ----------------------
-  // CENTER
+  // CENTER means the face is centered, so hold the current servo angle.
   // ----------------------
-  if (currentCommand == CMD_CENTER) {
+  if (currentCommand == CMD_CENTER || currentCommand == CMD_IDLE) {
+    return;
+  }
+
+  // ----------------------
+  // HOME
+  // ----------------------
+  if (currentCommand == CMD_HOME) {
 
     setServoAngle(SERVO_CENTER_ANGLE);
 
@@ -283,13 +312,13 @@ void handleServo() {
   }
 
   // ----------------------
-  // SEARCH MODE
+  // SCAN MODE
   // ----------------------
-  if (currentCommand == CMD_SEARCH) {
+  if (currentCommand == CMD_SCAN) {
 
     if (
         now - lastMoveAt <
-        SEARCH_INTERVAL_MS
+        SCAN_INTERVAL_MS
     ) {
       return;
     }
@@ -298,7 +327,7 @@ void handleServo() {
 
     setServoAngle(
         servoAngle +
-        (sweepDirection * SEARCH_STEP)
+        (sweepDirection * SCAN_STEP)
     );
 
     if (servoAngle >= SERVO_MAX_ANGLE) {
@@ -360,8 +389,8 @@ void setup() {
 
   panServo.attach(
       SERVO_PIN,
-      500,
-      2400
+      SERVO_MIN_PULSE_US,
+      SERVO_MAX_PULSE_US
   );
 
   setServoAngle(SERVO_CENTER_ANGLE);

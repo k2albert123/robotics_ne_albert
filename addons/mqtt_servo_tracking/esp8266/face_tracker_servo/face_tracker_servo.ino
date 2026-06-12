@@ -4,13 +4,13 @@
 #include <Servo.h>
 
 // Wi-Fi settings
-const char* WIFI_SSID = "Shin";
-const char* WIFI_PASSWORD = "password";
+const char* WIFI_SSID = "lol";
+const char* WIFI_PASSWORD = "123456789q";
 
 // MQTT settings
-const char* MQTT_SERVER = "157.173.101.159";
+const char* MQTT_SERVER = "broker.hivemq.com";
 const uint16_t MQTT_PORT = 1883;
-const char* MQTT_TOPIC = "vision/teamalpha/movement";
+const char* MQTT_TOPIC = "vision/Dieudonne/ne/movement";
 const char* MQTT_CLIENT_ID = "teamalpha-face-servo";
 
 // Servo configuration
@@ -18,10 +18,12 @@ const uint8_t SERVO_PIN = 14; // D5
 const int SERVO_MIN_ANGLE = 0;
 const int SERVO_MAX_ANGLE = 180;
 const int SERVO_CENTER_ANGLE = 90;
-const int TRACK_STEP = 1;
-const int SEARCH_STEP = 2;
-const unsigned long TRACK_INTERVAL_MS = 55;
-const unsigned long SEARCH_INTERVAL_MS = 70;
+const int SERVO_MIN_PULSE_US = 500;
+const int SERVO_MAX_PULSE_US = 2400;
+const float TRACK_STEP = 0.35f;
+const float SCAN_STEP = 0.50f;
+const unsigned long TRACK_INTERVAL_MS = 18;
+const unsigned long SCAN_INTERVAL_MS = 24;
 const unsigned long COMMAND_TIMEOUT_MS = 800;
 
 const bool REVERSE_SERVO = true;
@@ -31,7 +33,8 @@ enum MovementCommand {
   CMD_LEFT,
   CMD_RIGHT,
   CMD_CENTER,
-  CMD_SEARCH
+  CMD_HOME,
+  CMD_SCAN
 };
 
 WiFiClient wifiClient;
@@ -39,7 +42,7 @@ PubSubClient mqttClient(wifiClient);
 Servo panServo;
 
 MovementCommand currentCommand = CMD_IDLE;
-int servoAngle = SERVO_CENTER_ANGLE;
+float servoAngle = SERVO_CENTER_ANGLE;
 int sweepDirection = 1;
 unsigned long lastMoveAt = 0;
 unsigned long lastReconnectAttempt = 0;
@@ -47,10 +50,21 @@ unsigned long lastCommandAt = 0;
 
 // --- Core Logic ---
 
-void setServoAngle(int angle) {
-  angle = constrain(angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+int angleToPulse(float angle) {
+  float normalized =
+      (angle - SERVO_MIN_ANGLE) /
+      float(SERVO_MAX_ANGLE - SERVO_MIN_ANGLE);
+
+  return SERVO_MIN_PULSE_US +
+      int((normalized * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)) + 0.5f);
+}
+
+void setServoAngle(float angle) {
+  if (angle < SERVO_MIN_ANGLE) angle = SERVO_MIN_ANGLE;
+  if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
+
   servoAngle = angle;
-  panServo.write(servoAngle);
+  panServo.writeMicroseconds(angleToPulse(servoAngle));
 }
 
 void applyTrackingStep(int logicalDirection) {
@@ -70,7 +84,8 @@ MovementCommand parseCommand(String message) {
   if (message == "LEFT") return CMD_LEFT;
   if (message == "RIGHT") return CMD_RIGHT;
   if (message == "CENTER") return CMD_CENTER;
-  if (message == "SEARCH") return CMD_SEARCH;
+  if (message == "HOME") return CMD_HOME;
+  if (message == "SCAN") return CMD_SCAN;
   return CMD_IDLE;
 }
 
@@ -154,17 +169,21 @@ void handleServo() {
     currentCommand = CMD_IDLE;
   }
 
-  if (currentCommand == CMD_CENTER) {
-    setServoAngle(SERVO_CENTER_ANGLE);
-    currentCommand = CMD_IDLE; // Reset after centering
+  if (currentCommand == CMD_CENTER || currentCommand == CMD_IDLE) {
     return;
   }
 
-  if (currentCommand == CMD_SEARCH) {
-    if (now - lastMoveAt < SEARCH_INTERVAL_MS) return;
+  if (currentCommand == CMD_HOME) {
+    setServoAngle(SERVO_CENTER_ANGLE);
+    currentCommand = CMD_IDLE;
+    return;
+  }
+
+  if (currentCommand == CMD_SCAN) {
+    if (now - lastMoveAt < SCAN_INTERVAL_MS) return;
     lastMoveAt = now;
     
-    setServoAngle(servoAngle + (sweepDirection * SEARCH_STEP));
+    setServoAngle(servoAngle + (sweepDirection * SCAN_STEP));
     if (servoAngle >= SERVO_MAX_ANGLE) sweepDirection = -1;
     if (servoAngle <= SERVO_MIN_ANGLE) sweepDirection = 1;
     return;
@@ -185,7 +204,7 @@ void setup() {
   delay(10);
   Serial.println("\n[SYS] Team Alpha Face-Servo Initializing...");
 
-  panServo.attach(SERVO_PIN);
+  panServo.attach(SERVO_PIN, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
   setServoAngle(SERVO_CENTER_ANGLE);
 
   mqttClient.setServer(MQTT_SERVER, MQTT_PORT);

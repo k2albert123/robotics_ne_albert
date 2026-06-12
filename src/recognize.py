@@ -42,6 +42,8 @@ except Exception as e:
 from .haar_5pt import align_face_5pt
 from .onnx_providers import select_provider_interactive, get_provider_display_name
 
+DEFAULT_TARGET_NAME = "Dieudonne"
+
 # -------------------------
 # Data
 # -------------------------
@@ -547,10 +549,11 @@ def draw_text_box(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CPU-friendly real-time face recognition and face locking.")
     parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index.")
+    parser.add_argument("--target-name", default=DEFAULT_TARGET_NAME, help="Single authorized speaker identity to recognize and lock.")
     parser.add_argument("--camera-width", type=int, default=1280, help="Requested camera width.")
     parser.add_argument("--camera-height", type=int, default=720, help="Requested camera height.")
-    parser.add_argument("--max-faces", type=int, default=3, help="Maximum faces to detect when unlocked.")
-    parser.add_argument("--locked-max-faces", type=int, default=1, help="Maximum faces to detect while locked.")
+    parser.add_argument("--max-faces", type=int, default=5, help="Maximum faces to detect when unlocked.")
+    parser.add_argument("--locked-max-faces", type=int, default=5, help="Maximum faces to detect while locked.")
     parser.add_argument("--detect-every", type=int, default=2, help="Run Haar/FaceMesh detection every N frames.")
     parser.add_argument("--recognize-every", type=int, default=3, help="Run ArcFace recognition every N frames per face.")
     parser.add_argument("--landmark-roi-width", type=int, default=256, help="Resize large FaceMesh ROIs to this width.")
@@ -673,6 +676,9 @@ def main():
     args.locked_max_faces = int(max(1, min(args.max_faces, args.locked_max_faces)))
     args.detect_every = int(max(1, args.detect_every))
     args.recognize_every = int(max(1, args.recognize_every))
+    args.target_name = str(args.target_name).strip()
+    if not args.target_name:
+        raise ValueError("--target-name cannot be empty for single-speaker lock mode.")
     args.haar_scale = float(min(1.0, max(0.2, args.haar_scale)))
     args.landmark_roi_width = int(max(80, args.landmark_roi_width))
     configure_cv_for_cpu(args.cv_threads)
@@ -703,11 +709,17 @@ def main():
         debug=False,
         providers=providers,
     )
-    db = load_db_npz(db_path)
-    if not db:
+    all_db = load_db_npz(db_path)
+    if not all_db:
         print("Warning: Database is empty. Please enroll identities first.")
         det.close()
         return
+    if args.target_name not in all_db:
+        print(f"Error: target speaker '{args.target_name}' is not in {db_path}.")
+        print(f"Available identities: {', '.join(sorted(all_db.keys()))}")
+        det.close()
+        return
+    db = {args.target_name: all_db[args.target_name]}
     
     # Default threshold 0.40 for better recall (can be adjusted with +/-)
     matcher = FaceDBMatcher(db=db, dist_thresh=0.40)
@@ -735,7 +747,7 @@ def main():
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, int(camera_width), int(camera_height))
     
-    print(f"\nRecognize (multi-face) - Using {provider_name}")
+    print(f"\nRecognize target speaker: {args.target_name} - Using {provider_name}")
     print("Controls: q=quit, r=reload DB, +/- threshold, d=debug overlay")
     print("          LEFT/RIGHT arrows (or a/f keys) to select face, l=lock/unlock selected face")
     t0 = time.time()
@@ -925,7 +937,7 @@ def main():
             y_offset = 35
             
             # Main header with background box
-            header = f"IDs: {len(matcher._names)} | Threshold: {matcher.dist_thresh:.2f}"
+            header = f"Target: {args.target_name} | Threshold: {matcher.dist_thresh:.2f}"
             if fps is not None:
                 header += f" | FPS: {fps:.1f}"
             draw_text_box(vis, header, (12, y_offset), 0.75, (200, 255, 200), (20, 20, 20), 0.75, 6, cv2.FONT_HERSHEY_DUPLEX)
@@ -1002,8 +1014,13 @@ def main():
             if key == ord("q"):  # Quit
                 break
             elif key == ord("r"):  # Reload DB
-                matcher.reload_from(db_path)
-                print(f"[recognize] reloaded DB: {len(matcher._names)} identities")
+                reloaded_db = load_db_npz(db_path)
+                if args.target_name in reloaded_db:
+                    matcher.db = {args.target_name: reloaded_db[args.target_name]}
+                    matcher._rebuild()
+                    print(f"[recognize] reloaded target speaker: {args.target_name}")
+                else:
+                    print(f"[recognize] target speaker '{args.target_name}' not found; keeping current template")
             elif key in (ord("+"), ord("=")):  # Increase threshold
                 matcher.dist_thresh = float(min(1.20, matcher.dist_thresh + 0.01))
                 print(f"[recognize] thr(dist)={matcher.dist_thresh:.2f} (sim~{1.0-matcher.dist_thresh:.2f})")

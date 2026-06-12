@@ -141,7 +141,7 @@
         .movement-value.LEFT { color: var(--amber); }
         .movement-value.RIGHT { color: var(--blue); }
         .movement-value.CENTER { color: var(--green); }
-        .movement-value.SEARCH { color: var(--red); }
+        .movement-value.SCAN { color: var(--red); }
         .movement-value.IDLE { color: var(--steel); }
 
         .servo-track {
@@ -176,7 +176,7 @@
         .servo-knob.LEFT { left: 16%; background: var(--amber); }
         .servo-knob.RIGHT { left: 84%; background: var(--blue); }
         .servo-knob.CENTER { left: 50%; background: var(--green); }
-        .servo-knob.SEARCH { left: 50%; background: var(--red); animation: scan 1.1s ease-in-out infinite; }
+        .servo-knob.SCAN { left: 50%; background: var(--red); animation: scan 1.1s ease-in-out infinite; }
         .servo-knob.IDLE { left: 50%; background: var(--steel); }
 
         @keyframes scan {
@@ -315,7 +315,7 @@
         <header>
             <div>
                 <h1>Vision Control</h1>
-                <div class="subtitle">MQTT live feed - vision/teamalpha</div>
+                <div class="subtitle">MQTT live feed - vision/Dieudonne/ne</div>
             </div>
             <div id="connectionPill" class="pill connecting">
                 <span class="dot"></span>
@@ -357,6 +357,10 @@
                         <span>Threshold</span>
                         <strong id="thresholdValue">-</strong>
                     </div>
+                    <div class="metric">
+                        <span>Confidence</span>
+                        <strong id="confidenceValue">-</strong>
+                    </div>
                 </div>
             </div>
 
@@ -371,15 +375,15 @@
                 <div class="controls">
                     <label>
                         MQTT WebSocket URL
-                        <input id="wsUrlInput" type="text" value="ws://157.173.101.159:9001">
+                        <input id="wsUrlInput" type="text" value="ws://broker.hivemq.com:8000/mqtt">
                     </label>
                     <label>
                         Movement topic
-                        <input id="movementTopicInput" type="text" value="vision/teamalpha/movement">
+                        <input id="movementTopicInput" type="text" value="vision/Dieudonne/ne/movement">
                     </label>
                     <label>
                         Status topic
-                        <input id="statusTopicInput" type="text" value="vision/teamalpha/status">
+                        <input id="statusTopicInput" type="text" value="vision/Dieudonne/ne/status">
                     </label>
                     <button id="connectButton" type="button">Reconnect</button>
                 </div>
@@ -388,7 +392,7 @@
             <div class="panel blue">
                 <div class="panel-title">
                     <span>Event stream</span>
-                    <span id="topicValue">vision/teamalpha/status</span>
+                    <span id="topicValue">vision/Dieudonne/ne/status</span>
                 </div>
                 <ul id="eventLog" class="log" role="log"></ul>
             </div>
@@ -409,6 +413,7 @@
             errorValue: document.getElementById("errorValue"),
             fpsValue: document.getElementById("fpsValue"),
             thresholdValue: document.getElementById("thresholdValue"),
+            confidenceValue: document.getElementById("confidenceValue"),
             providerValue: document.getElementById("providerValue"),
             lockState: document.getElementById("lockState"),
             targetName: document.getElementById("targetName"),
@@ -435,6 +440,7 @@
             error_x: 0,
             fps: null,
             threshold: null,
+            confidence: null,
             provider: "-",
             locked: false,
             target: null,
@@ -542,6 +548,7 @@
                 error_x: status.error_x ?? latestState.error_x,
                 fps: status.fps ?? latestState.fps,
                 threshold: status.threshold ?? latestState.threshold,
+                confidence: status.confidence ?? status.target_similarity ?? latestState.confidence,
                 provider: status.provider || latestState.provider,
                 locked: Boolean(status.locked),
                 target: status.target || null,
@@ -572,6 +579,7 @@
             els.errorValue.textContent = formatNumber(latestState.error_x, 1) + " px";
             els.fpsValue.textContent = latestState.fps == null ? "-" : formatNumber(latestState.fps, 1);
             els.thresholdValue.textContent = latestState.threshold == null ? "-" : formatNumber(latestState.threshold, 3);
+            els.confidenceValue.textContent = latestState.confidence == null ? "-" : formatNumber(latestState.confidence, 3);
             els.providerValue.textContent = latestState.provider || "-";
 
             els.lockState.textContent = latestState.locked ? "Locked" : "Unlocked";
@@ -588,7 +596,7 @@
 
         function normalizeMovement(command) {
             const clean = String(command || "IDLE").toUpperCase();
-            return ["LEFT", "RIGHT", "CENTER", "SEARCH", "IDLE"].includes(clean) ? clean : "IDLE";
+            return ["LEFT", "RIGHT", "CENTER", "SCAN", "IDLE"].includes(clean) ? clean : "IDLE";
         }
 
         function addLog(kind, text) {

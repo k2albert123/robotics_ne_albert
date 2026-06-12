@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, TextIO, Tuple
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -67,6 +67,8 @@ class FaceDet:
 class ActionType(Enum):
     FACE_LOCKED = auto()
     FACE_LOST = auto()
+    FACE_REACQUIRED = auto()
+    SCAN_STARTED = auto()
     HEAD_LEFT = auto()
     HEAD_RIGHT = auto()
     EYE_BLINK = auto()
@@ -557,11 +559,12 @@ def draw_text_box(
 MOVEMENT_LEFT = "LEFT"
 MOVEMENT_RIGHT = "RIGHT"
 MOVEMENT_CENTER = "CENTER"
-MOVEMENT_SEARCH = "SEARCH"
+MOVEMENT_SCAN = "SCAN"
 MOVEMENT_IDLE = "IDLE"
 DEFAULT_MQTT_BROKER = "broker.hivemq.com"
 DEFAULT_MOVEMENT_TOPIC = "vision/Dieudonne/ne/movement"
 DEFAULT_STATUS_TOPIC = "vision/Dieudonne/ne/status"
+DEFAULT_TARGET_NAME = "Dieudonne"
 
 
 def compute_face_error_x(kps: np.ndarray, frame_width: int) -> float:
@@ -597,6 +600,9 @@ def build_dashboard_status(
     fps: Optional[float],
     threshold: float,
     provider_name: str,
+    target_name: str,
+    target_similarity: Optional[float],
+    target_distance: Optional[float],
 ) -> Dict[str, object]:
     return {
         "seq": int(seq),
@@ -604,12 +610,15 @@ def build_dashboard_status(
         "movement": movement_command,
         "error_x": round(float(movement_error_x), 2),
         "locked": face_lock is not None,
-        "target": face_lock.target_name if face_lock else None,
+        "target": face_lock.target_name if face_lock else target_name,
         "locked_face_found": bool(locked_face_found),
         "faces": int(faces_count),
         "fps": round(float(fps), 2) if fps is not None else None,
         "threshold": round(float(threshold), 3),
         "provider": provider_name,
+        "target_similarity": round(float(target_similarity), 4) if target_similarity is not None else None,
+        "target_distance": round(float(target_distance), 4) if target_distance is not None else None,
+        "confidence": round(float(target_similarity), 4) if target_similarity is not None else None,
     }
 
 
@@ -665,33 +674,37 @@ class MqttMovementPublisher:
         if rc != 0:
             print(f"[MQTT] Unexpected disconnect (rc={rc}), retrying...")
 
-    def publish(self, command: str, force: bool = False):
+    def publish(self, command: str, force: bool = False) -> str:
         now = time.time()
         if (
             not force
             and command == self.last_command
             and (now - self.last_publish_at) < self.min_publish_interval
         ):
-            return
+            return "throttled"
         if not self.connected:
-            return
+            return "disconnected"
 
         info = self.client.publish(self.topic, payload=command, qos=0, retain=False)
         if info.rc == mqtt.MQTT_ERR_SUCCESS:
             self.last_command = command
             self.last_publish_at = now
+            return "published"
+        return f"failed:{info.rc}"
 
-    def publish_status(self, status: Dict[str, object], force: bool = False):
+    def publish_status(self, status: Dict[str, object], force: bool = False) -> str:
         now = time.time()
         if not force and (now - self.last_status_publish_at) < self.status_min_publish_interval:
-            return
+            return "throttled"
         if not self.connected:
-            return
+            return "disconnected"
 
         payload = json.dumps(status, separators=(",", ":"))
         info = self.client.publish(self.status_topic, payload=payload, qos=0, retain=False)
         if info.rc == mqtt.MQTT_ERR_SUCCESS:
             self.last_status_publish_at = now
+            return "published"
+        return f"failed:{info.rc}"
 
     def close(self):
         try:
@@ -699,6 +712,43 @@ class MqttMovementPublisher:
             self.client.disconnect()
         except Exception:
             pass
+
+
+class EvidenceLogger:
+    def __init__(self, log_dir: Path, min_interval_sec: float = 0.25, enabled: bool = True):
+        self.enabled = bool(enabled)
+        self.min_interval_sec = float(max(0.0, min_interval_sec))
+        self.last_write_at = 0.0
+        self.path: Optional[Path] = None
+        self._fh: Optional[TextIO] = None
+
+        if self.enabled:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.path = log_dir / f"face_tracking_evidence_{stamp}.jsonl"
+            self._fh = self.path.open("a", encoding="utf-8")
+            print(f"[Evidence] JSONL log: {self.path}")
+
+    def write(self, record: Dict[str, object], force: bool = False) -> None:
+        if not self.enabled or self._fh is None:
+            return
+
+        now = time.time()
+        if not force and (now - self.last_write_at) < self.min_interval_sec:
+            return
+
+        enriched = {
+            "logged_at": datetime.fromtimestamp(now).isoformat(timespec="milliseconds"),
+            **record,
+        }
+        self._fh.write(json.dumps(enriched, separators=(",", ":")) + "\n")
+        self._fh.flush()
+        self.last_write_at = now
+
+    def close(self) -> None:
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -721,6 +771,11 @@ def parse_args() -> argparse.Namespace:
         "--mqtt-client-id",
         default=f"face-lock-{int(time.time())}",
         help="MQTT client id.",
+    )
+    parser.add_argument(
+        "--target-name",
+        default=DEFAULT_TARGET_NAME,
+        help="Single authorized speaker identity to recognize, lock, track, and log.",
     )
     parser.add_argument(
         "--deadzone-px",
@@ -747,16 +802,17 @@ def parse_args() -> argparse.Namespace:
         help="How many consecutive frames are needed before changing LEFT/RIGHT/CENTER.",
     )
     parser.add_argument(
-        "--search-delay-sec",
+        "--scan-delay-sec",
+        dest="scan_delay_sec",
         type=float,
         default=0.8,
-        help="Delay before sending SEARCH after the locked face is temporarily lost.",
+        help="Delay before sending SCAN after the locked face is temporarily lost.",
     )
     parser.add_argument(
         "--reacquire-hold-sec",
         type=float,
         default=0.30,
-        help="Short pause after SEARCH finds the locked face again before tracking resumes.",
+        help="Short pause after SCAN finds the locked face again before tracking resumes.",
     )
     parser.add_argument(
         "--mqtt-min-interval",
@@ -773,8 +829,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index.")
     parser.add_argument("--camera-width", type=int, default=1280, help="Requested camera width.")
     parser.add_argument("--camera-height", type=int, default=720, help="Requested camera height.")
-    parser.add_argument("--max-faces", type=int, default=3, help="Maximum faces to detect when unlocked.")
-    parser.add_argument("--locked-max-faces", type=int, default=1, help="Maximum faces to detect while locked.")
+    parser.add_argument("--max-faces", type=int, default=5, help="Maximum faces to detect when unlocked.")
+    parser.add_argument("--locked-max-faces", type=int, default=5, help="Maximum faces to detect while locked.")
     parser.add_argument("--detect-every", type=int, default=2, help="Run Haar/FaceMesh detection every N frames.")
     parser.add_argument("--recognize-every", type=int, default=3, help="Run ArcFace recognition every N frames per face.")
     parser.add_argument("--landmark-roi-width", type=int, default=256, help="Resize large FaceMesh ROIs to this width.")
@@ -791,6 +847,22 @@ def parse_args() -> argparse.Namespace:
         "--disable-mqtt",
         action="store_true",
         help="Run face lock tracking without MQTT publishing.",
+    )
+    parser.add_argument(
+        "--evidence-log-dir",
+        default="logs/evidence",
+        help="Directory for structured JSONL evidence logs.",
+    )
+    parser.add_argument(
+        "--evidence-log-interval-sec",
+        type=float,
+        default=0.25,
+        help="Minimum seconds between structured evidence records.",
+    )
+    parser.add_argument(
+        "--disable-evidence-log",
+        action="store_true",
+        help="Disable structured JSONL operational evidence logging.",
     )
     return parser.parse_args()
 
@@ -913,7 +985,7 @@ def apply_command_hold(
 ) -> Tuple[str, float]:
     if desired_command == current_command:
         return current_command, changed_at
-    if current_command not in (MOVEMENT_IDLE, MOVEMENT_SEARCH) and (now - changed_at) < hold_sec:
+    if current_command not in (MOVEMENT_IDLE, MOVEMENT_SCAN) and (now - changed_at) < hold_sec:
         return current_command, changed_at
     return desired_command, now
 
@@ -922,11 +994,15 @@ def main():
     args = parse_args()
     args.error_smooth_alpha = float(max(0.01, min(1.0, args.error_smooth_alpha)))
     args.command_confirm_frames = int(max(1, args.command_confirm_frames))
-    args.search_delay_sec = float(max(0.0, args.search_delay_sec))
+    args.scan_delay_sec = float(max(0.0, args.scan_delay_sec))
     args.reacquire_hold_sec = float(max(0.0, args.reacquire_hold_sec))
+    args.evidence_log_interval_sec = float(max(0.0, args.evidence_log_interval_sec))
     args.mqtt_min_interval = float(max(0.0, args.mqtt_min_interval))
     args.mqtt_status_min_interval = float(max(0.0, args.mqtt_status_min_interval))
     args.center_exit_hysteresis_px = float(max(0.0, args.center_exit_hysteresis_px))
+    args.target_name = str(args.target_name).strip()
+    if not args.target_name:
+        raise ValueError("--target-name cannot be empty for single-speaker lock mode.")
     args.max_faces = int(max(1, args.max_faces))
     args.locked_max_faces = int(max(1, min(args.max_faces, args.locked_max_faces)))
     args.detect_every = int(max(1, args.detect_every))
@@ -962,11 +1038,17 @@ def main():
         debug=False,
         providers=providers,
     )
-    db = load_db_npz(db_path)
-    if not db:
+    all_db = load_db_npz(db_path)
+    if not all_db:
         print("Warning: Database is empty. Please enroll identities first.")
         det.close()
         return
+    if args.target_name not in all_db:
+        print(f"Error: target speaker '{args.target_name}' is not in {db_path}.")
+        print(f"Available identities: {', '.join(sorted(all_db.keys()))}")
+        det.close()
+        return
+    db = {args.target_name: all_db[args.target_name]}
     
     # Default threshold 0.40 for better recall (can be adjusted with +/-)
     matcher = FaceDBMatcher(db=db, dist_thresh=0.40)
@@ -994,7 +1076,7 @@ def main():
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, int(camera_width), int(camera_height))
     
-    print(f"\nRecognize (multi-face) - Using {provider_name}")
+    print(f"\nRecognize target speaker: {args.target_name} - Using {provider_name}")
     print("Controls: q=quit, r=reload DB, +/- threshold, d=debug overlay")
     print("          LEFT/RIGHT arrows (or a/f keys) to select face, l=lock/unlock selected face")
     print(
@@ -1018,6 +1100,7 @@ def main():
     pending_track_count = 0
     face_missing_since: Optional[float] = None
     reacquire_hold_until = 0.0
+    scan_started_logged = False
     mqtt_publisher: Optional[MqttMovementPublisher] = None
     status_seq = 0
     frame_index = 0
@@ -1027,6 +1110,11 @@ def main():
     last_action_print_at: Dict[ActionType, float] = {}
     profile_last_print_at = 0.0
     last_profile: Dict[str, float] = {"detect": 0.0, "recognize": 0.0, "draw": 0.0}
+    evidence_logger = EvidenceLogger(
+        log_dir=Path(args.evidence_log_dir),
+        min_interval_sec=args.evidence_log_interval_sec,
+        enabled=not args.disable_evidence_log,
+    )
 
     if args.disable_mqtt:
         print("[MQTT] Disabled by flag (--disable-mqtt)")
@@ -1113,6 +1201,7 @@ def main():
                 pending_track_count = 0
                 face_missing_since = None
                 reacquire_hold_until = 0.0
+                scan_started_logged = False
                 if mqtt_publisher is not None:
                     mqtt_publisher.publish(MOVEMENT_IDLE, force=True)
             
@@ -1125,6 +1214,9 @@ def main():
 
             locked_face_found = False
             locked_face_kps: Optional[np.ndarray] = None
+            locked_face_bbox: Optional[List[int]] = None
+            target_match: Optional[MatchResult] = None
+            frame_match_records: List[Dict[str, object]] = []
             
             for i, f in enumerate(faces):
                 cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), (0, 255, 0), 2)
@@ -1147,6 +1239,10 @@ def main():
                 )
                 if recognized_now:
                     last_profile["recognize"] += (time.perf_counter() - recognize_started_at) * 1000.0
+
+                if mr.name == args.target_name and mr.accepted:
+                    if target_match is None or mr.similarity > target_match.similarity:
+                        target_match = mr
                 
                 # Check if this is our locked face
                 is_locked_face = False
@@ -1164,6 +1260,21 @@ def main():
                     is_locked_face = True
                     locked_face_found = True
                     locked_face_kps = f.kps.copy()
+                    locked_face_bbox = [int(f.x1), int(f.y1), int(f.x2), int(f.y2)]
+
+                frame_match_records.append(
+                    {
+                        "index": int(i),
+                        "bbox": [int(f.x1), int(f.y1), int(f.x2), int(f.y2)],
+                        "accepted": bool(mr.accepted),
+                        "name": mr.name,
+                        "stable_label": stable_label,
+                        "similarity": round(float(mr.similarity), 4),
+                        "distance": round(float(mr.distance), 4),
+                        "is_target": bool(mr.name == args.target_name and mr.accepted),
+                        "is_locked_face": bool(is_locked_face),
+                    }
+                )
                 
                 # label (use smoothed/stable label for display to reduce flicker)
                 label = stable_label
@@ -1235,14 +1346,22 @@ def main():
             # Movement command for ESP servo
             if face_lock and locked_face_found and locked_face_kps is not None:
                 was_missing = face_missing_since is not None
-                was_searching = (
+                was_scanning = (
                     was_missing
-                    and (current_time - face_missing_since) >= args.search_delay_sec
+                    and (current_time - face_missing_since) >= args.scan_delay_sec
                 )
+                if was_missing:
+                    detail = "Target face reacquired"
+                    if was_scanning:
+                        detail += " after SCAN"
+                    reacquired_action = Action(ActionType.FACE_REACQUIRED, current_time, detail)
+                    face_lock.history.append(reacquired_action)
+                    print(f"[Action] {reacquired_action.type.name}: {reacquired_action.details}")
                 face_missing_since = None
+                scan_started_logged = False
                 raw_error_x = compute_face_error_x(locked_face_kps, frame_width=w)
 
-                if was_searching:
+                if was_scanning:
                     filtered_error_x = raw_error_x
                     stable_track_command = MOVEMENT_CENTER
                     pending_track_command = None
@@ -1287,11 +1406,19 @@ def main():
             elif face_lock:
                 if face_missing_since is None:
                     face_missing_since = current_time
+                    lost_action = Action(ActionType.FACE_LOST, current_time, "Target face out of frame or occluded")
+                    face_lock.history.append(lost_action)
+                    print(f"[Action] {lost_action.type.name}: {lost_action.details}")
                 lost_for = current_time - face_missing_since
-                if lost_for < args.search_delay_sec:
+                if lost_for < args.scan_delay_sec:
                     movement_command = MOVEMENT_IDLE
                 else:
-                    movement_command = MOVEMENT_SEARCH
+                    movement_command = MOVEMENT_SCAN
+                    if not scan_started_logged:
+                        scan_action = Action(ActionType.SCAN_STARTED, current_time, "Started SCAN to reacquire target")
+                        face_lock.history.append(scan_action)
+                        scan_started_logged = True
+                        print(f"[Action] {scan_action.type.name}: {scan_action.details}")
                 pending_track_command = None
                 pending_track_count = 0
                 movement_error_x = 0.0
@@ -1302,6 +1429,7 @@ def main():
                 pending_track_count = 0
                 face_missing_since = None
                 reacquire_hold_until = 0.0
+                scan_started_logged = False
                 movement_command = MOVEMENT_IDLE
                 movement_error_x = 0.0
 
@@ -1314,28 +1442,51 @@ def main():
             )
             movement_command = visible_movement_command
 
+            status_seq += 1
+            status_payload = build_dashboard_status(
+                seq=status_seq,
+                movement_command=movement_command,
+                movement_error_x=movement_error_x,
+                face_lock=face_lock,
+                faces_count=len(faces),
+                locked_face_found=locked_face_found,
+                fps=fps,
+                threshold=matcher.dist_thresh,
+                provider_name=provider_name,
+                target_name=args.target_name,
+                target_similarity=target_match.similarity if target_match is not None else None,
+                target_distance=target_match.distance if target_match is not None else None,
+            )
+
+            mqtt_movement_result = "disabled"
+            mqtt_status_result = "disabled"
             if mqtt_publisher is not None:
-                mqtt_publisher.publish(movement_command)
-                status_seq += 1
-                mqtt_publisher.publish_status(
-                    build_dashboard_status(
-                        seq=status_seq,
-                        movement_command=movement_command,
-                        movement_error_x=movement_error_x,
-                        face_lock=face_lock,
-                        faces_count=len(faces),
-                        locked_face_found=locked_face_found,
-                        fps=fps,
-                        threshold=matcher.dist_thresh,
-                        provider_name=provider_name,
-                    )
-                )
+                mqtt_movement_result = mqtt_publisher.publish(movement_command)
+                mqtt_status_result = mqtt_publisher.publish_status(status_payload)
+
+            evidence_logger.write(
+                {
+                    "event": "frame",
+                    "seq": int(status_seq),
+                    "timestamp": current_time,
+                    "timestamp_iso": datetime.fromtimestamp(current_time).isoformat(timespec="milliseconds"),
+                    "target": args.target_name,
+                    "status": status_payload,
+                    "recognized_faces": frame_match_records,
+                    "locked_face_bbox": locked_face_bbox,
+                    "motor_command": movement_command,
+                    "horizontal_error_px": round(float(movement_error_x), 2),
+                    "mqtt_movement_publish": mqtt_movement_result,
+                    "mqtt_status_publish": mqtt_status_result,
+                    "threshold": round(float(matcher.dist_thresh), 3),
+                }
+            )
             
             # Draw UI elements with proper spacing and modern styling
             y_offset = 35
             
             # Main header with background box
-            header = f"IDs: {len(matcher._names)} | Threshold: {matcher.dist_thresh:.2f}"
+            header = f"Target: {args.target_name} | Threshold: {matcher.dist_thresh:.2f}"
             if fps is not None:
                 header += f" | FPS: {fps:.1f}"
             draw_text_box(vis, header, (12, y_offset), 0.75, (200, 255, 200), (20, 20, 20), 0.75, 6, cv2.FONT_HERSHEY_DUPLEX)
@@ -1418,8 +1569,13 @@ def main():
             if key == ord("q"):  # Quit
                 break
             elif key == ord("r"):  # Reload DB
-                matcher.reload_from(db_path)
-                print(f"[recognize] reloaded DB: {len(matcher._names)} identities")
+                reloaded_db = load_db_npz(db_path)
+                if args.target_name in reloaded_db:
+                    matcher.db = {args.target_name: reloaded_db[args.target_name]}
+                    matcher._rebuild()
+                    print(f"[recognize] reloaded target speaker: {args.target_name}")
+                else:
+                    print(f"[recognize] target speaker '{args.target_name}' not found; keeping current template")
             elif key in (ord("+"), ord("=")):  # Increase threshold
                 matcher.dist_thresh = float(min(1.20, matcher.dist_thresh + 0.01))
                 print(f"[recognize] thr(dist)={matcher.dist_thresh:.2f} (sim~{1.0-matcher.dist_thresh:.2f})")
@@ -1444,6 +1600,7 @@ def main():
                     pending_track_count = 0
                     face_missing_since = None
                     reacquire_hold_until = 0.0
+                    scan_started_logged = False
                     if mqtt_publisher is not None:
                         mqtt_publisher.publish(MOVEMENT_IDLE, force=True)
                 # Only allow locking if we have a selected recognized face
@@ -1468,28 +1625,58 @@ def main():
                     pending_track_count = 0
                     face_missing_since = None
                     reacquire_hold_until = 0.0
+                    scan_started_logged = False
                     print(f"[FaceLock] Locked onto {name} (face {selected_face_index + 1 if selected_face_index is not None else '?'})")
                     # Keep selection for visual feedback, but locking is done
     finally:
+        shutdown_time = time.time()
         if mqtt_publisher is not None:
-            mqtt_publisher.publish(MOVEMENT_IDLE, force=True)
-            mqtt_publisher.publish_status(
-                {
-                    "seq": int(status_seq + 1),
-                    "timestamp": time.time(),
-                    "movement": MOVEMENT_IDLE,
-                    "error_x": 0.0,
-                    "locked": False,
-                    "target": None,
-                    "locked_face_found": False,
-                    "faces": 0,
-                    "fps": None,
-                    "threshold": round(float(matcher.dist_thresh), 3),
-                    "provider": provider_name,
-                    "shutdown": True,
-                },
-                force=True,
-            )
+            shutdown_movement_result = mqtt_publisher.publish(MOVEMENT_IDLE, force=True)
+            shutdown_status = {
+                "seq": int(status_seq + 1),
+                "timestamp": shutdown_time,
+                "movement": MOVEMENT_IDLE,
+                "error_x": 0.0,
+                "locked": False,
+                "target": args.target_name,
+                "locked_face_found": False,
+                "faces": 0,
+                "fps": None,
+                "threshold": round(float(matcher.dist_thresh), 3),
+                "provider": provider_name,
+                "target_similarity": None,
+                "target_distance": None,
+                "confidence": None,
+                "shutdown": True,
+            }
+            shutdown_status_result = mqtt_publisher.publish_status(shutdown_status, force=True)
+        else:
+            shutdown_movement_result = "disabled"
+            shutdown_status_result = "disabled"
+            shutdown_status = {
+                "seq": int(status_seq + 1),
+                "timestamp": shutdown_time,
+                "movement": MOVEMENT_IDLE,
+                "shutdown": True,
+            }
+
+        evidence_logger.write(
+            {
+                "event": "shutdown",
+                "seq": int(status_seq + 1),
+                "timestamp": shutdown_time,
+                "timestamp_iso": datetime.fromtimestamp(shutdown_time).isoformat(timespec="milliseconds"),
+                "target": args.target_name,
+                "status": shutdown_status,
+                "motor_command": MOVEMENT_IDLE,
+                "mqtt_movement_publish": shutdown_movement_result,
+                "mqtt_status_publish": shutdown_status_result,
+            },
+            force=True,
+        )
+        evidence_logger.close()
+
+        if mqtt_publisher is not None:
             mqtt_publisher.close()
         det.close()
         cap.release()
