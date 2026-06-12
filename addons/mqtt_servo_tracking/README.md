@@ -80,7 +80,7 @@ python addons/mqtt_servo_tracking/recognize_mqtt.py
 Optional flags:
 
 ```bash
-python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker 157.173.101.159 --mqtt-port 1883 --mqtt-topic vision/teamalpha/movement --mqtt-status-topic vision/teamalpha/status --deadzone-px 80 --center-exit-hysteresis-px 30 --error-smooth-alpha 0.35 --search-delay-sec 0.8 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
+python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker 157.173.101.159 --mqtt-port 1883 --mqtt-topic vision/teamalpha/movement --mqtt-status-topic vision/teamalpha/status --camera-width 640 --camera-height 480 --max-faces 3 --detect-every 2 --recognize-every 3 --deadzone-px 80 --center-exit-hysteresis-px 30 --error-smooth-alpha 0.35 --command-hold-sec 0.25 --search-delay-sec 0.8 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
 ```
 
 Use `--disable-mqtt` to run the recognizer without publishing MQTT messages.
@@ -102,6 +102,8 @@ ws://157.173.101.159:9001
 It subscribes to both the movement topic and the dashboard status topic. If your broker uses a different WebSocket port or path, change it in the dashboard input field and reconnect.
 
 Plain MQTT port `1883` cannot be used directly by a browser.
+
+The dashboard uses status JSON as the authoritative display state. Raw movement messages are only a fallback when status messages stop arriving, so delayed movement packets should not make the UI flicker.
 
 ## ESP8266 Setup
 
@@ -150,7 +152,12 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
 
 ## Tuning
 
+- Use `--profile` to show CPU timing for detection, recognition, and full frame time.
+- Keep CPU systems at `--camera-width 640 --camera-height 480` unless the machine has headroom.
+- Increase `--detect-every` or `--recognize-every` to reduce CPU load.
+- Lower `--max-faces` when you only need to lock one or two people.
 - Increase `--deadzone-px` if the servo keeps moving near center.
+- Increase `--command-hold-sec` if short command blips still show up.
 - Increase `--center-exit-hysteresis-px` if the servo oscillates around center.
 - Increase `--search-delay-sec` if short recognition drops trigger sweeping.
 - Increase `--command-confirm-frames` for steadier movement at the cost of slower response.

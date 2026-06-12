@@ -129,6 +129,16 @@ class MatchResult:
     similarity: float
     accepted: bool
 
+@dataclass
+class CachedFace:
+    emb: Optional[np.ndarray] = None
+    match: Optional[MatchResult] = None
+    label_history: List[str] = field(default_factory=list)
+    embedding_history: List[np.ndarray] = field(default_factory=list)
+    stable_label: str = "Unknown"
+    aligned: Optional[np.ndarray] = None
+    last_recognized_frame: int = -9999
+
 # -------------------------
 # Math helpers
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -264,10 +274,14 @@ class HaarFaceMesh5pt:
         haar_xml: Optional[str] = None,
         model_path: str = "models/face_landmarker.task",
         min_size: Tuple[int, int] = (70, 70),
+        haar_scale: float = 0.5,
+        landmark_roi_width: int = 256,
         debug: bool = False,
     ):
         self.debug = bool(debug)
         self.min_size = tuple(map(int, min_size))
+        self.haar_scale = float(min(1.0, max(0.2, haar_scale)))
+        self.landmark_roi_width = int(max(80, landmark_roi_width))
         if haar_xml is None:
             haar_xml = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         self.face_cascade = cv2.CascadeClassifier(haar_xml)
@@ -302,22 +316,43 @@ class HaarFaceMesh5pt:
         self.IDX_MOUTH_RIGHT = 291
 
     def _haar_faces(self, gray: np.ndarray) -> np.ndarray:
+        scale = self.haar_scale
+        detect_gray = gray
+        min_size = self.min_size
+        if scale < 0.999:
+            detect_gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            min_size = (
+                max(20, int(round(self.min_size[0] * scale))),
+                max(20, int(round(self.min_size[1] * scale))),
+            )
+
         faces = self.face_cascade.detectMultiScale(
-            gray,
+            detect_gray,
             scaleFactor=1.1,
             minNeighbors=5,
             flags=cv2.CASCADE_SCALE_IMAGE,
-            minSize=self.min_size,
+            minSize=min_size,
         )
         if faces is None or len(faces) == 0:
             return np.zeros((0, 4), dtype=np.int32)
-        return faces.astype(np.int32) # (x,y,w,h)
+        faces = faces.astype(np.float32)
+        if scale < 0.999:
+            faces /= scale
+        return np.round(faces).astype(np.int32) # (x,y,w,h)
 
     def _roi_facemesh_5pt(self, roi_bgr: np.ndarray) -> Optional[np.ndarray]:
         H, W = roi_bgr.shape[:2]
         if H < 20 or W < 20:
             return None
-        rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
+        scale_back = 1.0
+        roi_for_mesh = roi_bgr
+        if W > self.landmark_roi_width:
+            scale_back = W / float(self.landmark_roi_width)
+            new_h = max(20, int(round(H / scale_back)))
+            roi_for_mesh = cv2.resize(roi_bgr, (self.landmark_roi_width, new_h), interpolation=cv2.INTER_AREA)
+
+        mesh_h, mesh_w = roi_for_mesh.shape[:2]
+        rgb = cv2.cvtColor(roi_for_mesh, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         res = self.detector.detect(mp_image)
         
@@ -329,7 +364,7 @@ class HaarFaceMesh5pt:
         pts = []
         for i in idxs:
             p = lm[i]
-            pts.append([p.x * W, p.y * H])
+            pts.append([p.x * mesh_w * scale_back, p.y * mesh_h * scale_back])
         kps = np.array(pts, dtype=np.float32)
         # enforce left/right ordering
         if kps[0, 0] > kps[1, 0]:
@@ -510,6 +545,22 @@ def draw_text_box(
 # -------------------------
 # Demo
 # -------------------------
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="CPU-friendly real-time face recognition and face locking.")
+    parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index.")
+    parser.add_argument("--camera-width", type=int, default=640, help="Requested camera width.")
+    parser.add_argument("--camera-height", type=int, default=480, help="Requested camera height.")
+    parser.add_argument("--max-faces", type=int, default=3, help="Maximum faces to detect when unlocked.")
+    parser.add_argument("--locked-max-faces", type=int, default=1, help="Maximum faces to detect while locked.")
+    parser.add_argument("--detect-every", type=int, default=2, help="Run Haar/FaceMesh detection every N frames.")
+    parser.add_argument("--recognize-every", type=int, default=3, help="Run ArcFace recognition every N frames per face.")
+    parser.add_argument("--landmark-roi-width", type=int, default=256, help="Resize large FaceMesh ROIs to this width.")
+    parser.add_argument("--haar-scale", type=float, default=0.5, help="Internal Haar detection scale, 0.2..1.0.")
+    parser.add_argument("--cv-threads", type=int, default=0, help="OpenCV thread count. 0 lets OpenCV decide.")
+    parser.add_argument("--profile", action="store_true", help="Show lightweight CPU timing overlay and console samples.")
+    return parser.parse_args()
+
+
 def save_action_history(face_name: str, actions: List[Action]):
     if not actions:
         return
@@ -523,7 +574,109 @@ def save_action_history(face_name: str, actions: List[Action]):
             time_str = datetime.fromtimestamp(action.timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
             f.write(f"{time_str} - {action.type.name}: {action.details}\n")
 
+
+def configure_cv_for_cpu(thread_count: int) -> None:
+    cv2.setUseOptimized(True)
+    if thread_count >= 0:
+        try:
+            cv2.setNumThreads(int(thread_count))
+        except Exception:
+            pass
+
+
+def empty_match() -> MatchResult:
+    return MatchResult(name=None, distance=1.0, similarity=0.0, accepted=False)
+
+
+def stable_label_from_history(history: List[str]) -> str:
+    if not history:
+        return "Unknown"
+    majority_label = max(set(history), key=history.count)
+    unknown_ratio = history.count("Unknown") / len(history)
+    if majority_label != "Unknown" and unknown_ratio < 0.5:
+        return majority_label
+    return "Unknown"
+
+
+def recognize_with_cache(
+    frame: np.ndarray,
+    face: FaceDet,
+    cache: CachedFace,
+    face_index: int,
+    frame_index: int,
+    embedder: ArcFaceEmbedderONNX,
+    matcher: FaceDBMatcher,
+    smoothing_window: int,
+    label_smoothing_window: int,
+    recognize_every: int,
+) -> Tuple[MatchResult, str, Optional[np.ndarray], bool]:
+    should_recognize = cache.match is None or ((frame_index + face_index) % recognize_every == 0)
+    if should_recognize:
+        aligned, _ = align_face_5pt(frame, face.kps, out_size=(112, 112))
+        emb_raw = embedder.embed(aligned)
+        cache.embedding_history.append(emb_raw)
+        if len(cache.embedding_history) > smoothing_window:
+            cache.embedding_history.pop(0)
+
+        emb_stack = np.stack(cache.embedding_history, axis=0)
+        emb = emb_stack.mean(axis=0)
+        emb = (emb / (np.linalg.norm(emb) + 1e-12)).astype(np.float32)
+        mr = matcher.match(emb)
+        raw_label = mr.name if mr.name is not None and mr.accepted else "Unknown"
+        cache.label_history.append(raw_label)
+        if len(cache.label_history) > label_smoothing_window:
+            cache.label_history.pop(0)
+
+        cache.emb = emb
+        cache.match = mr
+        cache.stable_label = stable_label_from_history(cache.label_history)
+        cache.aligned = aligned
+        cache.last_recognized_frame = frame_index
+
+    return cache.match or empty_match(), cache.stable_label, cache.aligned, should_recognize
+
+
+def face_center(face: FaceDet) -> Tuple[float, float]:
+    return ((face.x1 + face.x2) * 0.5, (face.y1 + face.y2) * 0.5)
+
+
+def match_caches_to_faces(
+    old_faces: List[FaceDet],
+    new_faces: List[FaceDet],
+    old_cache: Dict[int, CachedFace],
+) -> Dict[int, CachedFace]:
+    matched: Dict[int, CachedFace] = {}
+    used_old: set[int] = set()
+    for new_i, new_face in enumerate(new_faces):
+        nx, ny = face_center(new_face)
+        best_i: Optional[int] = None
+        best_dist = float("inf")
+        for old_i, old_face in enumerate(old_faces):
+            if old_i in used_old or old_i not in old_cache:
+                continue
+            ox, oy = face_center(old_face)
+            dist = float(np.hypot(nx - ox, ny - oy))
+            max_reasonable = max(80.0, 0.75 * max(new_face.x2 - new_face.x1, new_face.y2 - new_face.y1))
+            if dist < best_dist and dist <= max_reasonable:
+                best_dist = dist
+                best_i = old_i
+        if best_i is not None:
+            matched[new_i] = old_cache[best_i]
+            used_old.add(best_i)
+        else:
+            matched[new_i] = CachedFace()
+    return matched
+
+
 def main():
+    args = parse_args()
+    args.max_faces = int(max(1, args.max_faces))
+    args.locked_max_faces = int(max(1, min(args.max_faces, args.locked_max_faces)))
+    args.detect_every = int(max(1, args.detect_every))
+    args.recognize_every = int(max(1, args.recognize_every))
+    args.haar_scale = float(min(1.0, max(0.2, args.haar_scale)))
+    args.landmark_roi_width = int(max(80, args.landmark_roi_width))
+    configure_cv_for_cpu(args.cv_threads)
     db_path = Path("data/db/face_db.npz")
     os.makedirs("logs", exist_ok=True)
     
@@ -541,6 +694,8 @@ def main():
     
     det = HaarFaceMesh5pt(
         min_size=(70, 70),
+        haar_scale=args.haar_scale,
+        landmark_roi_width=args.landmark_roi_width,
         debug=False,
     )
     embedder = ArcFaceEmbedderONNX(
@@ -558,18 +713,15 @@ def main():
     # Default threshold 0.40 for better recall (can be adjusted with +/-)
     matcher = FaceDBMatcher(db=db, dist_thresh=0.40)
     
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(args.camera_index)
     if not cap.isOpened():
         print("Camera not available")
         det.close()
         return
     
-    # Set camera resolution (higher = better face detection, GPU can handle it)
-    # Common resolutions: 640x480, 1280x720, 1920x1080
-    # With GPU acceleration, higher resolution improves detection quality
-    # You can adjust these values based on your camera capabilities
-    camera_width = 1280  # Try 1920 for Full HD if your camera supports it
-    camera_height = 720  # Try 1080 for Full HD if your camera supports it
+    camera_width = args.camera_width
+    camera_height = args.camera_height
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
     
@@ -587,6 +739,13 @@ def main():
     frames = 0
     fps: Optional[float] = None
     show_debug = False
+    frame_index = 0
+    last_detect_frame = -9999
+    faces: List[FaceDet] = []
+    face_cache: Dict[int, CachedFace] = {}
+    last_action_print_at: Dict[ActionType, float] = {}
+    profile_last_print_at = 0.0
+    last_profile: Dict[str, float] = {"detect": 0.0, "recognize": 0.0, "draw": 0.0}
     
     # Face locking state
     face_lock: Optional[FaceLock] = None
@@ -598,23 +757,30 @@ def main():
     selected_face_index: Optional[int] = None  # Index of currently selected face (None = auto-select first)
     potential_face_to_lock: Optional[Tuple[str, np.ndarray, np.ndarray]] = None  # (name, emb, kps) of selected face
     
-    # Temporal smoothing for better accuracy (average recent embeddings per face)
-    # Maps face_id -> list of recent embeddings (max smoothing_window)
-    face_embedding_history: Dict[int, List[np.ndarray]] = {}
     smoothing_window = 5  # Number of frames to average
 
-    # Additional label smoothing to reduce flicker in displayed names.
-    # Maps face_id -> recent predicted labels (e.g., ["Alice", "Alice", "Unknown", ...])
-    face_label_history: Dict[int, List[str]] = {}
     label_smoothing_window = 7  # More frames here = more stable, slightly slower to react
     
     try:
         while True:
+            frame_started_at = time.perf_counter()
             ok, frame = cap.read()
             if not ok:
                 break
-            
-            faces = det.detect(frame, max_faces=5)
+
+            frame_index += 1
+            current_time = time.time()
+            last_profile["recognize"] = 0.0
+            detect_started_at = time.perf_counter()
+            detect_due = (frame_index - last_detect_frame) >= args.detect_every
+            if detect_due:
+                detect_max_faces = args.locked_max_faces if face_lock else args.max_faces
+                previous_faces = faces
+                faces = det.detect(frame, max_faces=detect_max_faces)
+                face_cache = match_caches_to_faces(previous_faces, faces, face_cache)
+                last_detect_frame = frame_index
+            last_profile["detect"] = (time.perf_counter() - detect_started_at) * 1000.0
+
             vis = frame.copy()
             
             # compute fps
@@ -634,7 +800,6 @@ def main():
             shown = 0
             
             # Check if we should unlock due to timeout
-            current_time = time.time()
             if face_lock and (current_time - face_lock.last_seen) > max_timeout:
                 save_action_history(face_lock.target_name, face_lock.history)
                 print(f"[FaceLock] Timeout - Unlocked {face_lock.target_name}")
@@ -642,10 +807,7 @@ def main():
                 selected_face_index = None
                 potential_face_to_lock = None
             
-            # Clean up embedding / label history for faces that disappeared
-            active_face_ids = set(range(len(faces)))
-            face_embedding_history = {k: v for k, v in face_embedding_history.items() if k in active_face_ids}
-            face_label_history = {k: v for k, v in face_label_history.items() if k in active_face_ids}
+            face_cache = {k: v for k, v in face_cache.items() if k < len(faces)}
             
             # Reset selection if selected face disappeared
             if selected_face_index is not None and selected_face_index >= len(faces):
@@ -657,60 +819,33 @@ def main():
                 for (x, y) in f.kps.astype(int):
                     cv2.circle(vis, (int(x), int(y)), 2, (0, 255, 0), -1)
                 
-                # align -> embed -> temporal smoothing -> match
-                aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
-                emb_raw = embedder.embed(aligned)
-                
-                # Temporal smoothing: average recent embeddings for this face
-                if i not in face_embedding_history:
-                    face_embedding_history[i] = []
-                face_embedding_history[i].append(emb_raw)
-                if len(face_embedding_history[i]) > smoothing_window:
-                    face_embedding_history[i].pop(0)
-                
-                # Average embeddings and L2-normalize
-                if len(face_embedding_history[i]) > 0:
-                    emb_stack = np.stack(face_embedding_history[i], axis=0)
-                    emb_smooth = emb_stack.mean(axis=0)
-                    emb_smooth = emb_smooth / (np.linalg.norm(emb_smooth) + 1e-12)
-                    emb = emb_smooth.astype(np.float32)
-                else:
-                    emb = emb_raw
-                
-                mr = matcher.match(emb)
-
-                # -----------------------------
-                # Label smoothing (majority vote)
-                # -----------------------------
-                raw_label = mr.name if mr.name is not None and mr.accepted else "Unknown"
-                if i not in face_label_history:
-                    face_label_history[i] = []
-                face_label_history[i].append(raw_label)
-                if len(face_label_history[i]) > label_smoothing_window:
-                    face_label_history[i].pop(0)
-
-                hist = face_label_history[i]
-                if hist:
-                    # Majority label in recent history
-                    uniq = set(hist)
-                    majority_label = max(uniq, key=hist.count)
-                    unknown_count = hist.count("Unknown")
-                    unknown_ratio = unknown_count / len(hist)
-
-                    # Only show a name if it dominates recent history and
-                    # there aren't too many 'Unknown' frames.
-                    if majority_label != "Unknown" and unknown_ratio < 0.5:
-                        stable_label = majority_label
-                    else:
-                        stable_label = "Unknown"
-                else:
-                    stable_label = raw_label
+                cache = face_cache.setdefault(i, CachedFace())
+                recognize_started_at = time.perf_counter()
+                mr, stable_label, aligned, recognized_now = recognize_with_cache(
+                    frame=frame,
+                    face=f,
+                    cache=cache,
+                    face_index=i,
+                    frame_index=frame_index,
+                    embedder=embedder,
+                    matcher=matcher,
+                    smoothing_window=smoothing_window,
+                    label_smoothing_window=label_smoothing_window,
+                    recognize_every=args.recognize_every,
+                )
+                if recognized_now:
+                    last_profile["recognize"] += (time.perf_counter() - recognize_started_at) * 1000.0
                 
                 # Check if this is our locked face
                 is_locked_face = False
                 if face_lock and mr.name == face_lock.target_name and mr.accepted:
                     # Update face lock with new position and detect actions
-                    actions = face_lock.update_position(f.kps)
+                    actions = []
+                    for action in face_lock.update_position(f.kps):
+                        last_at = last_action_print_at.get(action.type, 0.0)
+                        if current_time - last_at >= 0.7:
+                            actions.append(action)
+                            last_action_print_at[action.type] = current_time
                     face_lock.history.extend(actions)
                     for action in actions:
                         print(f"[Action] {action.type.name}: {action.details}")
@@ -729,12 +864,12 @@ def main():
                 if selected_face_index is None and not face_lock and mr.name and mr.accepted:
                     selected_face_index = i
                     is_selected = True
-                    potential_face_to_lock = (mr.name, emb, f.kps)
+                    potential_face_to_lock = (mr.name, cache.emb if cache.emb is not None else np.zeros(1, dtype=np.float32), f.kps)
                 
                 # Update potential lock target if this is the selected face
                 if is_selected and not face_lock:
                     if mr.name and mr.accepted:
-                        potential_face_to_lock = (mr.name, emb, f.kps)
+                        potential_face_to_lock = (mr.name, cache.emb if cache.emb is not None else np.zeros(1, dtype=np.float32), f.kps)
                     else:
                         potential_face_to_lock = None
                 
@@ -765,7 +900,7 @@ def main():
                     draw_text_with_shadow(vis, hint_text, (f.x1, f.y2 + 45), 0.65, (255, 255, 0), 1, font=cv2.FONT_HERSHEY_DUPLEX)
                 
                 # aligned preview thumbnails (stack)
-                if y0 + thumb <= h and shown < 4:
+                if show_debug and aligned is not None and y0 + thumb <= h and shown < 4:
                     vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
                     draw_text_with_shadow(
                         vis,
@@ -792,6 +927,18 @@ def main():
                 header += f" | FPS: {fps:.1f}"
             draw_text_box(vis, header, (12, y_offset), 0.75, (200, 255, 200), (20, 20, 20), 0.75, 6, cv2.FONT_HERSHEY_DUPLEX)
             y_offset += 40
+
+            if args.profile:
+                last_profile["draw"] = (time.perf_counter() - frame_started_at) * 1000.0
+                profile_text = (
+                    f"CPU ms detect={last_profile['detect']:.1f} "
+                    f"rec={last_profile['recognize']:.1f} frame={last_profile['draw']:.1f}"
+                )
+                draw_text_with_shadow(vis, profile_text, (12, y_offset), 0.55, (210, 210, 255), 1, font=cv2.FONT_HERSHEY_DUPLEX)
+                y_offset += 24
+                if current_time - profile_last_print_at >= 2.0:
+                    print(f"[profile] {profile_text} faces={len(faces)}")
+                    profile_last_print_at = current_time
             
             # Lock status with enhanced styling
             if face_lock:
@@ -817,6 +964,8 @@ def main():
                 draw_text_box(vis, status_text, (12, y_offset), 0.75, (200, 255, 200), (0, 40, 0), 0.7, 6, cv2.FONT_HERSHEY_DUPLEX)
                 y_offset += 40
             
+            cv2.imshow("Face Recognition - Press 'q' to quit", vis)
+
             # Handle key presses
             key_raw = cv2.waitKey(1)
             key = key_raw & 0xFF
@@ -884,8 +1033,6 @@ def main():
                     ))
                     print(f"[FaceLock] Locked onto {name} (face {selected_face_index + 1 if selected_face_index is not None else '?'})")
                     # Keep selection for visual feedback, but locking is done
-            
-            cv2.imshow("Face Recognition - Press 'q' to quit", vis)
     finally:
         det.close()
         cap.release()

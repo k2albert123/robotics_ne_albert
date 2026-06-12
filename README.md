@@ -146,7 +146,7 @@ Dashboard JSON is published on `vision/teamalpha/status`, including movement, lo
 Useful addon flags:
 
 ```bash
-python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker 157.173.101.159 --mqtt-topic vision/teamalpha/movement --mqtt-status-topic vision/teamalpha/status --deadzone-px 80 --center-exit-hysteresis-px 30 --search-delay-sec 0.8 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
+python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker 157.173.101.159 --mqtt-topic vision/teamalpha/movement --mqtt-status-topic vision/teamalpha/status --camera-width 640 --camera-height 480 --max-faces 3 --detect-every 2 --recognize-every 3 --deadzone-px 80 --center-exit-hysteresis-px 30 --command-hold-sec 0.25 --search-delay-sec 0.8 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
 ```
 
 ## Dashboard
@@ -167,6 +167,8 @@ It listens to:
 
 - `vision/teamalpha/movement`
 - `vision/teamalpha/status`
+
+The JSON status topic is authoritative for the displayed command. The raw movement topic is used only as a fallback if status messages stop arriving, which prevents delayed MQTT movement messages from making the dashboard flicker between commands.
 
 The page includes editable connection fields, so you can change the WebSocket URL or topics without editing the file.
 
@@ -209,7 +211,12 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
 
 ## Tuning Tips
 
+- CPU-first defaults use `640x480`, `--max-faces 3`, `--detect-every 2`, and `--recognize-every 3`.
+- Run with `--profile` to show frame, detection, and recognition timing in the recognition window.
+- Increase `--detect-every` or `--recognize-every` if CPU usage is still too high.
+- Lower `--max-faces` or use `--locked-max-faces 1` for smoother locked-face tracking.
 - Increase `--deadzone-px` if the servo moves while the face is already centered.
+- Increase `--command-hold-sec` if the dashboard or servo still reacts to short command blips.
 - Increase `--search-delay-sec` if brief recognition drops trigger `SEARCH` too quickly.
 - Increase `--command-confirm-frames` if `LEFT` and `RIGHT` flicker.
 - Lower the recognition threshold if false positives happen.

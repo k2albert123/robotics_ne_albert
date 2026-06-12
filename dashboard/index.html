@@ -424,6 +424,22 @@
         let messageCount = 0;
         let movementTopic = els.movementTopicInput.value;
         let statusTopic = els.statusTopicInput.value;
+        let lastStatusSeq = -1;
+        let lastStatusTimestamp = 0;
+        let lastStatusReceivedAt = 0;
+        let lastRenderedMovement = "IDLE";
+        let renderQueued = false;
+        let latestState = {
+            movement: "IDLE",
+            faces: 0,
+            error_x: 0,
+            fps: null,
+            threshold: null,
+            provider: "-",
+            locked: false,
+            target: null,
+            locked_face_found: false,
+        };
 
         function setConnectionState(state, text) {
             els.pill.className = "pill " + state;
@@ -446,6 +462,9 @@
             movementTopic = els.movementTopicInput.value.trim();
             statusTopic = els.statusTopicInput.value.trim();
             els.topicValue.textContent = statusTopic;
+            lastStatusSeq = -1;
+            lastStatusTimestamp = 0;
+            lastStatusReceivedAt = 0;
 
             setConnectionState("connecting", "Connecting");
             addLog("system", "connecting " + wsUrl);
@@ -479,8 +498,7 @@
             els.lastSeen.textContent = new Date().toLocaleTimeString();
 
             if (topic === movementTopic) {
-                setMovement(payload);
-                addLog("movement", payload);
+                handleRawMovement(payload);
                 return;
             }
 
@@ -494,29 +512,83 @@
             }
         }
 
+        function handleRawMovement(payload) {
+            const statusIsFresh = Date.now() - lastStatusReceivedAt < 1500;
+            if (statusIsFresh) return;
+
+            const movement = normalizeMovement(payload);
+            if (movement !== latestState.movement) {
+                latestState = { ...latestState, movement };
+                queueRender();
+                addLog("movement", movement);
+            }
+        }
+
         function updateStatus(status) {
-            if (status.movement) setMovement(String(status.movement));
+            const seq = Number(status.seq);
+            const timestamp = Number(status.timestamp || 0);
+            if (Number.isFinite(seq) && seq <= lastStatusSeq) return;
+            if (!Number.isFinite(seq) && timestamp > 0 && timestamp < lastStatusTimestamp) return;
 
-            els.facesValue.textContent = String(status.faces ?? 0);
-            els.errorValue.textContent = formatNumber(status.error_x, 1) + " px";
-            els.fpsValue.textContent = status.fps == null ? "-" : formatNumber(status.fps, 1);
-            els.thresholdValue.textContent = status.threshold == null ? "-" : formatNumber(status.threshold, 3);
-            els.providerValue.textContent = status.provider || "-";
+            if (Number.isFinite(seq)) lastStatusSeq = seq;
+            if (timestamp > 0) lastStatusTimestamp = timestamp;
+            lastStatusReceivedAt = Date.now();
 
-            const locked = Boolean(status.locked);
-            els.lockState.textContent = locked ? "Locked" : "Unlocked";
-            els.targetName.textContent = "Target: " + (status.target || "none");
+            const previousMovement = latestState.movement;
+            latestState = {
+                ...latestState,
+                movement: normalizeMovement(status.movement || latestState.movement),
+                faces: status.faces ?? latestState.faces,
+                error_x: status.error_x ?? latestState.error_x,
+                fps: status.fps ?? latestState.fps,
+                threshold: status.threshold ?? latestState.threshold,
+                provider: status.provider || latestState.provider,
+                locked: Boolean(status.locked),
+                target: status.target || null,
+                locked_face_found: Boolean(status.locked_face_found),
+            };
 
-            const found = status.locked_face_found ? "found" : "not found";
-            addLog("status", `${status.movement || "UNKNOWN"} / ${locked ? status.target || "locked" : "unlocked"} / ${found}`);
+            queueRender();
+
+            if (latestState.movement !== previousMovement || messageCount % 20 === 0) {
+                const found = latestState.locked_face_found ? "found" : "not found";
+                addLog("status", `${latestState.movement} / ${latestState.locked ? latestState.target || "locked" : "unlocked"} / ${found}`);
+            }
+        }
+
+        function queueRender() {
+            if (renderQueued) return;
+            renderQueued = true;
+            requestAnimationFrame(() => {
+                renderQueued = false;
+                renderState();
+            });
+        }
+
+        function renderState() {
+            setMovement(latestState.movement);
+
+            els.facesValue.textContent = String(latestState.faces ?? 0);
+            els.errorValue.textContent = formatNumber(latestState.error_x, 1) + " px";
+            els.fpsValue.textContent = latestState.fps == null ? "-" : formatNumber(latestState.fps, 1);
+            els.thresholdValue.textContent = latestState.threshold == null ? "-" : formatNumber(latestState.threshold, 3);
+            els.providerValue.textContent = latestState.provider || "-";
+
+            els.lockState.textContent = latestState.locked ? "Locked" : "Unlocked";
+            els.targetName.textContent = "Target: " + (latestState.target || "none");
         }
 
         function setMovement(command) {
-            const clean = String(command || "IDLE").toUpperCase();
-            const known = ["LEFT", "RIGHT", "CENTER", "SEARCH", "IDLE"].includes(clean) ? clean : "IDLE";
+            const known = normalizeMovement(command);
+            lastRenderedMovement = known;
             els.movementValue.textContent = known;
             els.movementValue.className = "movement-value " + known;
             els.servoKnob.className = "servo-knob " + known;
+        }
+
+        function normalizeMovement(command) {
+            const clean = String(command || "IDLE").toUpperCase();
+            return ["LEFT", "RIGHT", "CENTER", "SEARCH", "IDLE"].includes(clean) ? clean : "IDLE";
         }
 
         function addLog(kind, text) {
