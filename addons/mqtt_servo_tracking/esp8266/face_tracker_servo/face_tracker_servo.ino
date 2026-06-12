@@ -4,14 +4,23 @@
 #include <Servo.h>
 
 // Wi-Fi settings
-const char* WIFI_SSID = "lol";
+const char* WIFI_SSID = "lol1";
 const char* WIFI_PASSWORD = "123456789q";
 
 // MQTT settings
 const char* MQTT_SERVER = "broker.hivemq.com";
 const uint16_t MQTT_PORT = 1883;
 const char* MQTT_TOPIC = "vision/Dieudonne/ne/movement";
-const char* MQTT_CLIENT_ID = "teamalpha-face-servo";
+const char* MQTT_CLIENT_ID_PREFIX = "dieudonne";
+const IPAddress MQTT_FALLBACK_IPS[] = {
+  IPAddress(3, 126, 147, 153),
+  IPAddress(3, 124, 122, 176),
+  IPAddress(18, 197, 232, 142),
+  IPAddress(3, 123, 123, 192),
+  IPAddress(3, 120, 204, 188)
+};
+const uint8_t MQTT_FALLBACK_IP_COUNT =
+    sizeof(MQTT_FALLBACK_IPS) / sizeof(MQTT_FALLBACK_IPS[0]);
 
 // Servo configuration
 const uint8_t SERVO_PIN = 14; // D5
@@ -47,6 +56,7 @@ int sweepDirection = 1;
 unsigned long lastMoveAt = 0;
 unsigned long lastReconnectAttempt = 0;
 unsigned long lastCommandAt = 0;
+String mqttClientId = "";
 
 // --- Core Logic ---
 
@@ -126,6 +136,8 @@ void connectWiFi() {
 
   Serial.print("[WiFi] Connecting");
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long start = millis();
@@ -136,6 +148,15 @@ void connectWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n[WiFi] Connected");
+    Serial.print("[WiFi] IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("[WiFi] Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("[WiFi] DNS: ");
+    Serial.println(WiFi.dnsIP());
+    Serial.print("[WiFi] RSSI: ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
   } else {
     Serial.println("\n[WiFi] Failed");
   }
@@ -143,12 +164,61 @@ void connectWiFi() {
 
 bool connectMqtt() {
   if (mqttClient.connected()) return true;
+  if (WiFi.status() != WL_CONNECTED) return false;
 
   if (millis() - lastReconnectAttempt < 5000) return false;
   lastReconnectAttempt = millis();
 
-  Serial.print("[MQTT] Connecting...");
-  if (!mqttClient.connect(MQTT_CLIENT_ID)) {
+  IPAddress brokerIp;
+  bool dnsResolved = false;
+  bool connectedProbe = false;
+
+  Serial.print("[MQTT] Resolving ");
+  Serial.print(MQTT_SERVER);
+  Serial.print("...");
+  if (WiFi.hostByName(MQTT_SERVER, brokerIp)) {
+    dnsResolved = true;
+    Serial.print(" ");
+    Serial.println(brokerIp);
+  } else {
+    Serial.println(" DNS failed");
+  }
+
+  for (uint8_t attempt = 0; attempt <= MQTT_FALLBACK_IP_COUNT; attempt++) {
+    if (!dnsResolved || attempt > 0) {
+      uint8_t fallbackIndex = dnsResolved ? attempt - 1 : attempt;
+      if (fallbackIndex >= MQTT_FALLBACK_IP_COUNT) {
+        break;
+      }
+      brokerIp = MQTT_FALLBACK_IPS[fallbackIndex];
+      Serial.print("[MQTT] DNS fallback IP ");
+      Serial.println(brokerIp);
+    }
+
+    WiFiClient probe;
+    Serial.print("[MQTT] TCP probe ");
+    Serial.print(brokerIp);
+    Serial.print(":");
+    Serial.print(MQTT_PORT);
+    Serial.print("...");
+    if (probe.connect(brokerIp, MQTT_PORT)) {
+      Serial.println(" ok");
+      probe.stop();
+      connectedProbe = true;
+      break;
+    }
+
+    Serial.println(" failed");
+    probe.stop();
+  }
+
+  if (!connectedProbe) return false;
+
+  mqttClient.setServer(brokerIp, MQTT_PORT);
+  Serial.print("[MQTT] Connecting as ");
+  Serial.print(mqttClientId);
+  Serial.print("...");
+  if (!mqttClient.connect(mqttClientId.c_str())) {
     Serial.print(" Failed, rc=");
     Serial.println(mqttClient.state());
     return false;
@@ -203,6 +273,9 @@ void setup() {
   Serial.begin(115200);
   delay(10);
   Serial.println("\n[SYS] Team Alpha Face-Servo Initializing...");
+  mqttClientId = String(MQTT_CLIENT_ID_PREFIX) + "-" + String(ESP.getChipId(), HEX);
+  Serial.print("[MQTT] Client ID: ");
+  Serial.println(mqttClientId);
 
   panServo.attach(SERVO_PIN, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
   setServoAngle(SERVO_CENTER_ANGLE);

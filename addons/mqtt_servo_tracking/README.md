@@ -53,6 +53,7 @@ Status payload shape:
   "timestamp": 1781190000.0,
   "movement": "LEFT",
   "error_x": -124.5,
+  "raw_error_x": -138.2,
   "locked": true,
   "target": "Dieudonne",
   "locked_face_found": true,
@@ -60,9 +61,16 @@ Status payload shape:
   "confidence": 0.8231,
   "target_similarity": 0.8231,
   "target_distance": 0.1769,
+  "tracking_zone": "LEFT",
+  "center_zone_ratio": 0.36,
+  "center_zone_half_width_px": 172.8,
+  "deadzone_px": 172.8,
   "fps": 18.7,
   "threshold": 0.4,
-  "provider": "CPU"
+  "provider": "CPU",
+  "resolution": {"width": 960, "height": 540},
+  "profile_ms": {"detect": 4.5, "recognize": 8.3, "draw": 1.2},
+  "mqtt_connected": true
 }
 ```
 
@@ -85,7 +93,7 @@ python addons/mqtt_servo_tracking/recognize_mqtt.py
 Optional flags:
 
 ```bash
-python addons/mqtt_servo_tracking/recognize_mqtt.py --target-name Dieudonne --mqtt-broker broker.hivemq.com --mqtt-port 1883 --mqtt-topic vision/Dieudonne/ne/movement --mqtt-status-topic vision/Dieudonne/ne/status --camera-width 1280 --camera-height 720 --max-faces 5 --locked-max-faces 5 --detect-every 2 --recognize-every 3 --deadzone-px 80 --center-exit-hysteresis-px 30 --error-smooth-alpha 0.35 --command-hold-sec 0.25 --scan-delay-sec 0.8 --reacquire-hold-sec 0.30 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
+python addons/mqtt_servo_tracking/recognize_mqtt.py --target-name Dieudonne --mqtt-broker broker.hivemq.com --mqtt-port 1883 --mqtt-topic vision/Dieudonne/ne/movement --mqtt-status-topic vision/Dieudonne/ne/status --camera-width 960 --camera-height 540 --max-faces 5 --locked-max-faces 5 --detect-every 2 --recognize-every 3 --landmark-roi-width 224 --deadzone-px 70 --center-zone-ratio 0.36 --center-exit-hysteresis-px 45 --error-smooth-alpha 0.35 --command-hold-sec 0.25 --scan-delay-sec 0.8 --reacquire-hold-sec 0.30 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
 ```
 
 Use `--disable-mqtt` to run the recognizer without publishing MQTT messages. Structured evidence logs are enabled by default and are written to `logs/evidence/`.
@@ -207,11 +215,14 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
 ## Tuning
 
 - Use `--profile` to show CPU timing for detection, recognition, and full frame time.
-- Drop to `--camera-width 640 --camera-height 360` on CPU systems that cannot keep up with 1280x720.
+- Default live tracking uses `960x540` 16:9 capture with `--landmark-roi-width 224` for lower latency.
+- Drop to `--camera-width 640 --camera-height 360` on CPU systems that cannot keep up with 960x540.
 - Increase `--detect-every` or `--recognize-every` to reduce CPU load.
 - Keep `--locked-max-faces` above `1` when demonstrating multiple-face robustness.
-- Increase `--deadzone-px` if the servo keeps moving near center.
+- `--center-zone-ratio` defines the acceptable center band; the default `0.36` keeps the servo still inside roughly the middle third of the frame.
+- Increase `--center-zone-ratio` or `--deadzone-px` if the servo keeps moving near center.
 - Increase `--command-hold-sec` if short command blips still show up.
+- Press `d` in the recognition window for debug mode. It shows confidence, distance, timing, MQTT publish results, the evidence log file, and the center-zone guide lines.
 - Increase `--center-exit-hysteresis-px` if the servo oscillates around center.
 - Increase `--scan-delay-sec` if short recognition drops trigger `SCAN`.
 - Increase `--command-confirm-frames` for steadier movement at the cost of slower response.
@@ -220,6 +231,11 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
 ## Troubleshooting
 
 - Python publishes but ESP8266 does not move: check ESP Serial Monitor, Wi-Fi credentials, broker, topic, and servo wiring.
+- ESP shows `rc=-2`: the board could not open the TCP connection to the broker. With the diagnostic firmware, check the line before it:
+  - `DNS failed`: try another Wi-Fi network/hotspot or use the broker IP temporarily.
+  - `TCP probe ... failed`: the Wi-Fi network is blocking outbound MQTT port `1883`, the broker is unreachable from the board, or signal/power is unstable.
+  - `TCP probe ... ok` but MQTT still fails: check broker settings, client ID, and whether the broker requires authentication.
+- If public brokers are blocked, run Mosquitto on the laptop and set `MQTT_SERVER` to the laptop Wi-Fi IP address, for example `192.168.2.199`.
 - Dashboard stays offline: confirm MQTT over WebSockets is enabled at `ws://broker.hivemq.com:8000/mqtt`.
 - Recognizer is slow on CPU: lower camera resolution in `recognize_mqtt.py`.
 - Known faces show as unknown: enroll more samples or increase the recognition threshold with `+`.

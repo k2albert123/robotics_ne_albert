@@ -276,7 +276,7 @@ class HaarFaceMesh5pt:
         model_path: str = "models/face_landmarker.task",
         min_size: Tuple[int, int] = (70, 70),
         haar_scale: float = 0.5,
-        landmark_roi_width: int = 256,
+        landmark_roi_width: int = 224,
         debug: bool = False,
     ):
         self.debug = bool(debug)
@@ -550,13 +550,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CPU-friendly real-time face recognition and face locking.")
     parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index.")
     parser.add_argument("--target-name", default=DEFAULT_TARGET_NAME, help="Single authorized speaker identity to recognize and lock.")
-    parser.add_argument("--camera-width", type=int, default=1280, help="Requested camera width.")
-    parser.add_argument("--camera-height", type=int, default=720, help="Requested camera height.")
+    parser.add_argument("--camera-width", type=int, default=960, help="Requested camera width.")
+    parser.add_argument("--camera-height", type=int, default=540, help="Requested camera height.")
     parser.add_argument("--max-faces", type=int, default=5, help="Maximum faces to detect when unlocked.")
     parser.add_argument("--locked-max-faces", type=int, default=5, help="Maximum faces to detect while locked.")
     parser.add_argument("--detect-every", type=int, default=2, help="Run Haar/FaceMesh detection every N frames.")
     parser.add_argument("--recognize-every", type=int, default=3, help="Run ArcFace recognition every N frames per face.")
-    parser.add_argument("--landmark-roi-width", type=int, default=256, help="Resize large FaceMesh ROIs to this width.")
+    parser.add_argument("--landmark-roi-width", type=int, default=224, help="Resize large FaceMesh ROIs to this width.")
     parser.add_argument("--haar-scale", type=float, default=0.5, help="Internal Haar detection scale, 0.2..1.0.")
     parser.add_argument("--cv-threads", type=int, default=0, help="OpenCV thread count. 0 lets OpenCV decide.")
     parser.add_argument("--profile", action="store_true", help="Show lightweight CPU timing overlay and console samples.")

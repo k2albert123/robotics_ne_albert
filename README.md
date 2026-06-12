@@ -143,12 +143,12 @@ Movement payloads on `vision/Dieudonne/ne/movement`:
 
 The firmware also accepts `HOME` for manual recentering; the Python tracker does not publish it automatically.
 
-Dashboard JSON is published on `vision/Dieudonne/ne/status`, including movement, lock state, target name, face count, confidence, horizontal error, FPS, threshold, and provider.
+Dashboard JSON is published on `vision/Dieudonne/ne/status`, including movement, lock state, target name, face count, confidence, distance, raw and smoothed horizontal error, center-zone/deadzone values, FPS, timing, threshold, provider, resolution, and MQTT health.
 
 Useful addon flags:
 
 ```bash
-python addons/mqtt_servo_tracking/recognize_mqtt.py --target-name Dieudonne --mqtt-broker broker.hivemq.com --mqtt-topic vision/Dieudonne/ne/movement --mqtt-status-topic vision/Dieudonne/ne/status --camera-width 1280 --camera-height 720 --max-faces 5 --locked-max-faces 5 --detect-every 2 --recognize-every 3 --deadzone-px 80 --center-exit-hysteresis-px 30 --command-hold-sec 0.25 --scan-delay-sec 0.8 --reacquire-hold-sec 0.30 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
+python addons/mqtt_servo_tracking/recognize_mqtt.py --target-name Dieudonne --mqtt-broker broker.hivemq.com --mqtt-topic vision/Dieudonne/ne/movement --mqtt-status-topic vision/Dieudonne/ne/status --camera-width 960 --camera-height 540 --max-faces 5 --locked-max-faces 5 --detect-every 2 --recognize-every 3 --landmark-roi-width 224 --deadzone-px 70 --center-zone-ratio 0.36 --center-exit-hysteresis-px 45 --command-hold-sec 0.25 --scan-delay-sec 0.8 --reacquire-hold-sec 0.30 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
 ```
 
 ## Recognize To Command Flow
@@ -288,11 +288,12 @@ Safety and stability checklist:
 
 ## Tuning Tips
 
-- Default live tracking uses `1280x720`, `--max-faces 5`, `--locked-max-faces 5`, `--detect-every 2`, and `--recognize-every 3`.
+- Default live tracking uses `960x540` 16:9 capture, `--landmark-roi-width 224`, `--max-faces 5`, `--locked-max-faces 5`, `--detect-every 2`, and `--recognize-every 3`.
 - Run with `--profile` to show frame, detection, and recognition timing in the recognition window.
 - Increase `--detect-every` or `--recognize-every` if CPU usage is still too high.
 - Keep `--locked-max-faces` above `1` when demonstrating multiple-face robustness.
-- Increase `--deadzone-px` if the servo moves while the face is already centered.
+- `--center-zone-ratio` defines the acceptable center band; the default `0.36` treats roughly the middle third of the 16:9 frame as centered.
+- Increase `--center-zone-ratio` or `--deadzone-px` if the servo moves while the face is already centered.
 - Increase `--command-hold-sec` if the dashboard or servo still reacts to short command blips.
 - Increase `--scan-delay-sec` if brief recognition drops trigger `SCAN` too quickly.
 - Increase `--command-confirm-frames` if `LEFT` and `RIGHT` flicker.
@@ -318,4 +319,5 @@ For the final demonstration, record or present evidence for each case:
 - Camera not available: check the camera index in the recognizer code if your webcam is not device `1`.
 - Dashboard offline: confirm the broker exposes MQTT over WebSockets at `ws://broker.hivemq.com:8000/mqtt`.
 - ESP8266 not moving: confirm Wi-Fi credentials, broker address, topic, and Serial Monitor output.
+- ESP8266/ESP32 `rc=-2`: the board failed to open TCP to the MQTT broker. The diagnostic firmware prints DNS, TCP probe, IP, gateway, DNS server, and RSSI before the MQTT handshake. If the TCP probe fails, try a phone hotspot, another broker, or a local Mosquitto broker on the laptop and set `MQTT_SERVER` to the laptop Wi-Fi IP.
 - CPU-only machine: keep `onnxruntime`; do not install `onnxruntime-gpu`.

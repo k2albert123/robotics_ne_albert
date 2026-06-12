@@ -286,7 +286,7 @@ class HaarFaceMesh5pt:
         model_path: str = "models/face_landmarker.task",
         min_size: Tuple[int, int] = (70, 70),
         haar_scale: float = 0.5,
-        landmark_roi_width: int = 256,
+        landmark_roi_width: int = 224,
         debug: bool = False,
     ):
         self.debug = bool(debug)
@@ -553,6 +553,56 @@ def draw_text_box(
     
     return (text_width + padding * 2, text_height + padding * 2 + baseline)
 
+
+def draw_translucent_rect(
+    img: np.ndarray,
+    top_left: Tuple[int, int],
+    bottom_right: Tuple[int, int],
+    color: Tuple[int, int, int],
+    alpha: float,
+) -> None:
+    overlay = img.copy()
+    cv2.rectangle(overlay, top_left, bottom_right, color, -1)
+    cv2.addWeighted(overlay, alpha, img, 1.0 - alpha, 0, img)
+
+
+def draw_info_panel(
+    img: np.ndarray,
+    title: str,
+    lines: List[str],
+    origin: Tuple[int, int],
+    width: int,
+    accent_color: Tuple[int, int, int],
+    alpha: float = 0.62,
+) -> int:
+    x, y = origin
+    line_height = 22
+    title_height = 24
+    height = title_height + line_height * len(lines) + 18
+    h, w = img.shape[:2]
+    x2 = min(w - 8, x + width)
+    y2 = min(h - 8, y + height)
+    draw_translucent_rect(img, (x, y), (x2, y2), (16, 18, 19), alpha)
+    cv2.rectangle(img, (x, y), (x2, y2), accent_color, 1)
+    cv2.line(img, (x, y), (x2, y), accent_color, 3)
+    draw_text_with_shadow(img, title, (x + 12, y + 20), 0.54, accent_color, 1, font=cv2.FONT_HERSHEY_DUPLEX)
+    text_y = y + title_height + 18
+    for line in lines:
+        draw_text_with_shadow(img, line, (x + 12, text_y), 0.52, (232, 238, 238), 1, font=cv2.FONT_HERSHEY_DUPLEX)
+        text_y += line_height
+    return y2
+
+
+def draw_center_zone_guides(img: np.ndarray, center_zone_half_width_px: float) -> None:
+    h, w = img.shape[:2]
+    center_x = w // 2
+    left = int(max(0, center_x - center_zone_half_width_px))
+    right = int(min(w - 1, center_x + center_zone_half_width_px))
+    draw_translucent_rect(img, (left, 0), (right, h), (28, 72, 55), 0.12)
+    cv2.line(img, (left, 0), (left, h), (80, 190, 150), 1, cv2.LINE_AA)
+    cv2.line(img, (right, 0), (right, h), (80, 190, 150), 1, cv2.LINE_AA)
+    cv2.line(img, (center_x, 0), (center_x, h), (200, 220, 220), 1, cv2.LINE_AA)
+
 # -------------------------
 # MQTT movement control
 # -------------------------
@@ -565,11 +615,30 @@ DEFAULT_MQTT_BROKER = "broker.hivemq.com"
 DEFAULT_MOVEMENT_TOPIC = "vision/Dieudonne/ne/movement"
 DEFAULT_STATUS_TOPIC = "vision/Dieudonne/ne/status"
 DEFAULT_TARGET_NAME = "Dieudonne"
+DEFAULT_CAMERA_WIDTH = 960
+DEFAULT_CAMERA_HEIGHT = 540
+DEFAULT_LANDMARK_ROI_WIDTH = 224
+DEFAULT_CENTER_ZONE_RATIO = 0.36
 
 
 def compute_face_error_x(kps: np.ndarray, frame_width: int) -> float:
     face_center_x = float(np.mean(kps[:, 0]))
     return face_center_x - (float(frame_width) / 2.0)
+
+
+def center_zone_geometry(frame_width: int, deadzone_px: float, center_zone_ratio: float) -> Tuple[float, float]:
+    safe_ratio = float(min(0.75, max(0.08, center_zone_ratio)))
+    center_zone_half_width_px = (float(frame_width) * safe_ratio) / 2.0
+    effective_deadzone_px = max(float(deadzone_px), center_zone_half_width_px)
+    return effective_deadzone_px, center_zone_half_width_px
+
+
+def tracking_zone_from_error(error_x: float, deadzone_px: float) -> str:
+    if abs(float(error_x)) <= float(deadzone_px):
+        return "CENTER"
+    if error_x < 0:
+        return "LEFT"
+    return "RIGHT"
 
 
 def command_from_error_with_hysteresis(
@@ -594,6 +663,7 @@ def build_dashboard_status(
     seq: int,
     movement_command: str,
     movement_error_x: float,
+    raw_error_x: float,
     face_lock: Optional[FaceLock],
     faces_count: int,
     locked_face_found: bool,
@@ -603,12 +673,20 @@ def build_dashboard_status(
     target_name: str,
     target_similarity: Optional[float],
     target_distance: Optional[float],
+    center_zone_ratio: float,
+    center_zone_half_width_px: float,
+    effective_deadzone_px: float,
+    tracking_zone: str,
+    camera_width: int,
+    camera_height: int,
+    profile_ms: Dict[str, float],
 ) -> Dict[str, object]:
     return {
         "seq": int(seq),
         "timestamp": time.time(),
         "movement": movement_command,
         "error_x": round(float(movement_error_x), 2),
+        "raw_error_x": round(float(raw_error_x), 2),
         "locked": face_lock is not None,
         "target": face_lock.target_name if face_lock else target_name,
         "locked_face_found": bool(locked_face_found),
@@ -619,6 +697,12 @@ def build_dashboard_status(
         "target_similarity": round(float(target_similarity), 4) if target_similarity is not None else None,
         "target_distance": round(float(target_distance), 4) if target_distance is not None else None,
         "confidence": round(float(target_similarity), 4) if target_similarity is not None else None,
+        "center_zone_ratio": round(float(center_zone_ratio), 3),
+        "center_zone_half_width_px": round(float(center_zone_half_width_px), 2),
+        "deadzone_px": round(float(effective_deadzone_px), 2),
+        "tracking_zone": tracking_zone,
+        "resolution": {"width": int(camera_width), "height": int(camera_height)},
+        "profile_ms": {key: round(float(value), 2) for key, value in profile_ms.items()},
     }
 
 
@@ -780,13 +864,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--deadzone-px",
         type=float,
-        default=80.0,
-        help="Horizontal pixel deadzone around frame center for CENTER command.",
+        default=70.0,
+        help="Minimum horizontal pixel deadzone around frame center for CENTER command.",
+    )
+    parser.add_argument(
+        "--center-zone-ratio",
+        type=float,
+        default=DEFAULT_CENTER_ZONE_RATIO,
+        help="Fraction of frame width treated as the acceptable center band.",
     )
     parser.add_argument(
         "--center-exit-hysteresis-px",
         type=float,
-        default=30.0,
+        default=45.0,
         help="Extra pixels required to leave CENTER and start LEFT/RIGHT movement.",
     )
     parser.add_argument(
@@ -827,13 +917,13 @@ def parse_args() -> argparse.Namespace:
         help="Minimum seconds between dashboard status MQTT messages.",
     )
     parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index.")
-    parser.add_argument("--camera-width", type=int, default=1280, help="Requested camera width.")
-    parser.add_argument("--camera-height", type=int, default=720, help="Requested camera height.")
+    parser.add_argument("--camera-width", type=int, default=DEFAULT_CAMERA_WIDTH, help="Requested camera width.")
+    parser.add_argument("--camera-height", type=int, default=DEFAULT_CAMERA_HEIGHT, help="Requested camera height.")
     parser.add_argument("--max-faces", type=int, default=5, help="Maximum faces to detect when unlocked.")
     parser.add_argument("--locked-max-faces", type=int, default=5, help="Maximum faces to detect while locked.")
     parser.add_argument("--detect-every", type=int, default=2, help="Run Haar/FaceMesh detection every N frames.")
     parser.add_argument("--recognize-every", type=int, default=3, help="Run ArcFace recognition every N frames per face.")
-    parser.add_argument("--landmark-roi-width", type=int, default=256, help="Resize large FaceMesh ROIs to this width.")
+    parser.add_argument("--landmark-roi-width", type=int, default=DEFAULT_LANDMARK_ROI_WIDTH, help="Resize large FaceMesh ROIs to this width.")
     parser.add_argument("--haar-scale", type=float, default=0.5, help="Internal Haar detection scale, 0.2..1.0.")
     parser.add_argument("--cv-threads", type=int, default=0, help="OpenCV thread count. 0 lets OpenCV decide.")
     parser.add_argument("--profile", action="store_true", help="Show lightweight CPU timing overlay and console samples.")
@@ -999,6 +1089,8 @@ def main():
     args.evidence_log_interval_sec = float(max(0.0, args.evidence_log_interval_sec))
     args.mqtt_min_interval = float(max(0.0, args.mqtt_min_interval))
     args.mqtt_status_min_interval = float(max(0.0, args.mqtt_status_min_interval))
+    args.deadzone_px = float(max(0.0, args.deadzone_px))
+    args.center_zone_ratio = float(min(0.75, max(0.08, args.center_zone_ratio)))
     args.center_exit_hysteresis_px = float(max(0.0, args.center_exit_hysteresis_px))
     args.target_name = str(args.target_name).strip()
     if not args.target_name:
@@ -1010,6 +1102,13 @@ def main():
     args.command_hold_sec = float(max(0.0, args.command_hold_sec))
     args.haar_scale = float(min(1.0, max(0.2, args.haar_scale)))
     args.landmark_roi_width = int(max(80, args.landmark_roi_width))
+    if args.camera_width <= 0 or args.camera_height <= 0:
+        raise ValueError("--camera-width and --camera-height must be positive integers.")
+    requested_aspect = args.camera_width / float(args.camera_height)
+    if abs(requested_aspect - (16.0 / 9.0)) > 0.02:
+        corrected_height = int(round(args.camera_width * 9.0 / 16.0))
+        print(f"[camera] Adjusting height to keep 16:9: {args.camera_width}x{corrected_height}")
+        args.camera_height = max(1, corrected_height)
     configure_cv_for_cpu(args.cv_threads)
     db_path = Path("data/db/face_db.npz")
     os.makedirs("logs", exist_ok=True)
@@ -1064,6 +1163,7 @@ def main():
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
+    cap.set(cv2.CAP_PROP_FPS, 30)
     
     # Verify actual resolution (camera may not support requested resolution)
     actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -1092,6 +1192,10 @@ def main():
     show_debug = False
     movement_command = MOVEMENT_IDLE
     movement_error_x = 0.0
+    raw_movement_error_x = 0.0
+    tracking_zone = "CENTER"
+    effective_deadzone_px = args.deadzone_px
+    center_zone_half_width_px = args.deadzone_px
     filtered_error_x: Optional[float] = None
     stable_track_command = MOVEMENT_CENTER
     visible_movement_command = MOVEMENT_IDLE
@@ -1180,6 +1284,11 @@ def main():
             
             # draw + recognize each face
             h, w = vis.shape[:2]
+            effective_deadzone_px, center_zone_half_width_px = center_zone_geometry(
+                frame_width=w,
+                deadzone_px=args.deadzone_px,
+                center_zone_ratio=args.center_zone_ratio,
+            )
             thumb = 112
             pad = 8
             x0 = w - thumb - pad
@@ -1360,6 +1469,7 @@ def main():
                 face_missing_since = None
                 scan_started_logged = False
                 raw_error_x = compute_face_error_x(locked_face_kps, frame_width=w)
+                raw_movement_error_x = float(raw_error_x)
 
                 if was_scanning:
                     filtered_error_x = raw_error_x
@@ -1376,6 +1486,7 @@ def main():
                         + (1.0 - args.error_smooth_alpha) * filtered_error_x
                     )
                 movement_error_x = float(filtered_error_x)
+                tracking_zone = tracking_zone_from_error(movement_error_x, effective_deadzone_px)
 
                 if current_time < reacquire_hold_until:
                     movement_command = MOVEMENT_IDLE
@@ -1383,7 +1494,7 @@ def main():
                     reacquire_hold_until = 0.0
                     desired_track_command = command_from_error_with_hysteresis(
                         error_x=movement_error_x,
-                        deadzone_px=args.deadzone_px,
+                        deadzone_px=effective_deadzone_px,
                         center_exit_hysteresis_px=args.center_exit_hysteresis_px,
                         previous_command=stable_track_command,
                     )
@@ -1422,6 +1533,8 @@ def main():
                 pending_track_command = None
                 pending_track_count = 0
                 movement_error_x = 0.0
+                raw_movement_error_x = 0.0
+                tracking_zone = "MISSING"
             else:
                 filtered_error_x = None
                 stable_track_command = MOVEMENT_CENTER
@@ -1432,6 +1545,8 @@ def main():
                 scan_started_logged = False
                 movement_command = MOVEMENT_IDLE
                 movement_error_x = 0.0
+                raw_movement_error_x = 0.0
+                tracking_zone = "IDLE"
 
             visible_movement_command, visible_command_changed_at = apply_command_hold(
                 desired_command=movement_command,
@@ -1447,6 +1562,7 @@ def main():
                 seq=status_seq,
                 movement_command=movement_command,
                 movement_error_x=movement_error_x,
+                raw_error_x=raw_movement_error_x,
                 face_lock=face_lock,
                 faces_count=len(faces),
                 locked_face_found=locked_face_found,
@@ -1456,7 +1572,15 @@ def main():
                 target_name=args.target_name,
                 target_similarity=target_match.similarity if target_match is not None else None,
                 target_distance=target_match.distance if target_match is not None else None,
+                center_zone_ratio=args.center_zone_ratio,
+                center_zone_half_width_px=center_zone_half_width_px,
+                effective_deadzone_px=effective_deadzone_px,
+                tracking_zone=tracking_zone,
+                camera_width=w,
+                camera_height=h,
+                profile_ms=last_profile,
             )
+            status_payload["mqtt_connected"] = bool(mqtt_publisher is not None and mqtt_publisher.connected)
 
             mqtt_movement_result = "disabled"
             mqtt_status_result = "disabled"
@@ -1475,63 +1599,114 @@ def main():
                     "recognized_faces": frame_match_records,
                     "locked_face_bbox": locked_face_bbox,
                     "motor_command": movement_command,
+                    "tracking_zone": tracking_zone,
                     "horizontal_error_px": round(float(movement_error_x), 2),
+                    "raw_horizontal_error_px": round(float(raw_movement_error_x), 2),
+                    "center_zone_ratio": round(float(args.center_zone_ratio), 3),
+                    "center_zone_half_width_px": round(float(center_zone_half_width_px), 2),
+                    "deadzone_px": round(float(effective_deadzone_px), 2),
                     "mqtt_movement_publish": mqtt_movement_result,
                     "mqtt_status_publish": mqtt_status_result,
                     "threshold": round(float(matcher.dist_thresh), 3),
                 }
             )
             
-            # Draw UI elements with proper spacing and modern styling
-            y_offset = 35
-            
-            # Main header with background box
-            header = f"Target: {args.target_name} | Threshold: {matcher.dist_thresh:.2f}"
-            if fps is not None:
-                header += f" | FPS: {fps:.1f}"
-            draw_text_box(vis, header, (12, y_offset), 0.75, (200, 255, 200), (20, 20, 20), 0.75, 6, cv2.FONT_HERSHEY_DUPLEX)
-            y_offset += 40
+            if show_debug:
+                draw_center_zone_guides(vis, center_zone_half_width_px)
 
-            movement_text = f"MQTT movement: {movement_command}"
-            if movement_command in (MOVEMENT_LEFT, MOVEMENT_RIGHT, MOVEMENT_CENTER):
-                movement_text += f" (err_x={movement_error_x:+.1f}px)"
-            draw_text_with_shadow(vis, movement_text, (12, y_offset), 0.62, (180, 220, 255), 1, font=cv2.FONT_HERSHEY_DUPLEX)
-            y_offset += 28
+            confidence_text = f"{target_match.similarity:.3f}" if target_match is not None else "-"
+            distance_text = f"{target_match.distance:.3f}" if target_match is not None else "-"
+            fps_text = f"{fps:.1f}" if fps is not None else "-"
+            lock_text = f"LOCKED: {face_lock.target_name}" if face_lock else "UNLOCKED"
+            found_text = "found" if locked_face_found else "not found"
+            movement_line = f"move={movement_command} zone={tracking_zone} err={movement_error_x:+.1f}px"
+            if movement_command in (MOVEMENT_SCAN, MOVEMENT_IDLE):
+                movement_line = f"move={movement_command} zone={tracking_zone}"
 
-            if args.profile:
+            accent = (85, 210, 160) if face_lock else (210, 210, 210)
+            if movement_command == MOVEMENT_SCAN:
+                accent = (70, 150, 255)
+            elif movement_command in (MOVEMENT_LEFT, MOVEMENT_RIGHT):
+                accent = (80, 180, 255)
+
+            summary_lines = [
+                f"target={args.target_name}  {lock_text}",
+                movement_line,
+                f"faces={len(faces)}  locked_face={found_text}  fps={fps_text}",
+                f"confidence={confidence_text}  distance={distance_text}  threshold={matcher.dist_thresh:.3f}",
+            ]
+            debug_panel_width = min(410, max(300, w // 3)) if show_debug else 0
+            summary_width_limit = w - debug_panel_width - 36 if show_debug else w - 24
+            summary_width = max(300, min(560, summary_width_limit))
+            draw_info_panel(vis, "FACE LOCK TELEMETRY", summary_lines, (12, 12), summary_width, accent, 0.58)
+
+            if args.profile or show_debug:
                 last_profile["draw"] = (time.perf_counter() - frame_started_at) * 1000.0
                 profile_text = (
                     f"CPU ms detect={last_profile['detect']:.1f} "
                     f"rec={last_profile['recognize']:.1f} frame={last_profile['draw']:.1f}"
                 )
-                draw_text_with_shadow(vis, profile_text, (12, y_offset), 0.55, (210, 210, 255), 1, font=cv2.FONT_HERSHEY_DUPLEX)
-                y_offset += 24
                 if current_time - profile_last_print_at >= 2.0:
-                    print(f"[profile] {profile_text} faces={len(faces)}")
+                    print(
+                        f"[profile] {profile_text} faces={len(faces)} "
+                        f"confidence={confidence_text} movement={movement_command} zone={tracking_zone}"
+                    )
                     profile_last_print_at = current_time
+
+            if show_debug:
+                evidence_name = evidence_logger.path.name if evidence_logger.path is not None else "disabled"
+                debug_lines = [
+                    f"seq={status_seq}  provider={provider_name}",
+                    f"resolution={w}x{h}  center_zone={args.center_zone_ratio:.2f}",
+                    f"center_half={center_zone_half_width_px:.1f}px  deadzone={effective_deadzone_px:.1f}px",
+                    f"raw_err={raw_movement_error_x:+.1f}px  smooth_err={movement_error_x:+.1f}px",
+                    f"mqtt_move={mqtt_movement_result}  mqtt_status={mqtt_status_result}",
+                    f"profile detect={last_profile['detect']:.1f} rec={last_profile['recognize']:.1f} draw={last_profile['draw']:.1f}",
+                    f"evidence={evidence_name}",
+                ]
+                panel_width = debug_panel_width
+                draw_info_panel(
+                    vis,
+                    "DEBUG METRICS",
+                    debug_lines,
+                    (max(12, w - panel_width - 12), 12),
+                    panel_width,
+                    (210, 190, 120),
+                    0.66,
+                )
             
-            # Lock status with enhanced styling
+            y_offset = h - 18
+            # Bottom status strip
             if face_lock:
-                status_text = f"🔒 LOCKED ON: {face_lock.target_name} (Frames: {face_lock.consecutive_frames})"
-                draw_text_box(vis, status_text, (12, y_offset), 0.85, (255, 200, 100), (40, 20, 0), 0.8, 8, cv2.FONT_HERSHEY_DUPLEX)
+                status_text = f"LOCKED: {face_lock.target_name} | frames={face_lock.consecutive_frames}"
+                status_text = f"LOCKED: {face_lock.target_name} | frames={face_lock.consecutive_frames}"
+                draw_text_box(vis, status_text, (12, y_offset), 0.58, (220, 245, 245), (16, 18, 19), 0.68, 6, cv2.FONT_HERSHEY_DUPLEX)
                 y_offset += 40
                 
                 # Last action
                 if face_lock.history and len(face_lock.history) > 0:
                     last_action = face_lock.history[-1]
                     action_text = f"Last Action: {last_action.type.name} - {last_action.details}"
-                    draw_text_with_shadow(vis, action_text, (12, h - 25), 0.65, (200, 255, 255), 1, font=cv2.FONT_HERSHEY_DUPLEX)
+                    draw_text_with_shadow(vis, action_text, (12, max(24, h - 52)), 0.55, (200, 255, 255), 1, font=cv2.FONT_HERSHEY_DUPLEX)
             else:
                 if len(faces) > 1:
                     if selected_face_index is not None and selected_face_index < len(faces):
-                        status_text = f"👤 Selected face {selected_face_index + 1}/{len(faces)} | ← → to change | 'l' to lock"
+                        status_text = f"Selected face {selected_face_index + 1}/{len(faces)} | arrows/a/f change | l locks"
                     else:
-                        status_text = f"👥 {len(faces)} faces detected | ← → to select | 'l' to lock"
+                        status_text = f"{len(faces)} faces detected | arrows/a/f select | l locks"
                 elif len(faces) == 1:
-                    status_text = f"👤 Press 'l' to lock the recognized face"
+                    status_text = "Press l to lock the recognized face"
                 else:
-                    status_text = f"🔍 No faces detected"
-                draw_text_box(vis, status_text, (12, y_offset), 0.75, (200, 255, 200), (0, 40, 0), 0.7, 6, cv2.FONT_HERSHEY_DUPLEX)
+                    status_text = "No faces detected"
+                if len(faces) > 1 and selected_face_index is not None and selected_face_index < len(faces):
+                    status_text = f"Selected face {selected_face_index + 1}/{len(faces)} | arrows/a/f change | l locks"
+                elif len(faces) > 1:
+                    status_text = f"{len(faces)} faces detected | arrows/a/f select | l locks"
+                elif len(faces) == 1:
+                    status_text = "Press l to lock the recognized face"
+                else:
+                    status_text = "No faces detected"
+                draw_text_box(vis, status_text, (12, y_offset), 0.58, (220, 245, 245), (16, 18, 19), 0.68, 6, cv2.FONT_HERSHEY_DUPLEX)
                 y_offset += 40
             
             cv2.imshow(window_name, vis)
@@ -1647,6 +1822,14 @@ def main():
                 "target_similarity": None,
                 "target_distance": None,
                 "confidence": None,
+                "raw_error_x": 0.0,
+                "center_zone_ratio": round(float(args.center_zone_ratio), 3),
+                "center_zone_half_width_px": round(float(center_zone_half_width_px), 2),
+                "deadzone_px": round(float(effective_deadzone_px), 2),
+                "tracking_zone": "IDLE",
+                "resolution": {"width": int(args.camera_width), "height": int(args.camera_height)},
+                "profile_ms": {key: round(float(value), 2) for key, value in last_profile.items()},
+                "mqtt_connected": bool(mqtt_publisher.connected),
                 "shutdown": True,
             }
             shutdown_status_result = mqtt_publisher.publish_status(shutdown_status, force=True)
@@ -1657,6 +1840,25 @@ def main():
                 "seq": int(status_seq + 1),
                 "timestamp": shutdown_time,
                 "movement": MOVEMENT_IDLE,
+                "error_x": 0.0,
+                "raw_error_x": 0.0,
+                "target": args.target_name,
+                "tracking_zone": "IDLE",
+                "locked": False,
+                "locked_face_found": False,
+                "faces": 0,
+                "fps": None,
+                "threshold": round(float(matcher.dist_thresh), 3),
+                "provider": provider_name,
+                "target_similarity": None,
+                "target_distance": None,
+                "confidence": None,
+                "center_zone_ratio": round(float(args.center_zone_ratio), 3),
+                "center_zone_half_width_px": round(float(center_zone_half_width_px), 2),
+                "deadzone_px": round(float(effective_deadzone_px), 2),
+                "resolution": {"width": int(args.camera_width), "height": int(args.camera_height)},
+                "profile_ms": {key: round(float(value), 2) for key, value in last_profile.items()},
+                "mqtt_connected": False,
                 "shutdown": True,
             }
 
