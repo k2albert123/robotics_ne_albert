@@ -129,7 +129,7 @@ Default MQTT settings:
 
 - Broker: `broker.hivemq.com`
 - MQTT port: `1883`
-- Browser WebSocket URL: `ws://broker.hivemq.com:8000/mqtt`
+- Browser WebSocket URL: `wss://broker.hivemq.com:8884/mqtt`
 - Movement topic: `vision/Dieudonne/ne/movement`
 - Status topic: `vision/Dieudonne/ne/status`
 
@@ -212,7 +212,7 @@ dashboard/index.html
 The dashboard is a static HTML file. It uses MQTT over WebSockets and defaults to:
 
 ```text
-ws://broker.hivemq.com:8000/mqtt
+wss://broker.hivemq.com:8884/mqtt
 ```
 
 It listens to:
@@ -224,7 +224,7 @@ The JSON status topic is authoritative for the displayed command. The raw moveme
 
 The page includes editable connection fields, so you can change the WebSocket URL or topics without editing the file.
 
-The dashboard connects via MQTT over WebSockets at `ws://broker.hivemq.com:8000/mqtt`. Plain MQTT port `1883` is for Python and ESP8266/ESP32 clients, not browsers.
+The dashboard connects via MQTT over secure WebSockets at `wss://broker.hivemq.com:8884/mqtt`. Plain MQTT port `1883` is for Python and ESP8266/ESP32 clients, not browsers. If you run a broker that only exposes non-TLS WebSockets, use its `ws://...` URL in the dashboard field.
 
 ## ESP8266 Servo Setup
 
@@ -245,7 +245,9 @@ The dashboard connects via MQTT over WebSockets at `ws://broker.hivemq.com:8000/
    - `SERVO_MIN_PULSE_US`
    - `SERVO_MAX_PULSE_US`
    - `TRACK_STEP`
+   - `TRACK_INTERVAL_MS`
    - `SCAN_STEP`
+   - `SCAN_INTERVAL_MS`
    - `REVERSE_SERVO`
 
 5. Install Arduino libraries:
@@ -317,7 +319,7 @@ For the final demonstration, record or present evidence for each case:
 
 - Empty database: run `python -m src.enroll` or `python -m src.rebuild_db`.
 - Camera not available: check the camera index in the recognizer code if your webcam is not device `1`.
-- Dashboard offline: confirm the broker exposes MQTT over WebSockets at `ws://broker.hivemq.com:8000/mqtt`.
+- Dashboard offline: confirm the broker exposes MQTT over WebSockets at `wss://broker.hivemq.com:8884/mqtt`.
 - ESP8266 not moving: confirm Wi-Fi credentials, broker address, topic, and Serial Monitor output.
 - ESP8266/ESP32 `rc=-2`: the board failed to open TCP to the MQTT broker. The diagnostic firmware prints DNS, TCP probe, IP, gateway, DNS server, and RSSI before the MQTT handshake. If the TCP probe fails, try a phone hotspot, another broker, or a local Mosquitto broker on the laptop and set `MQTT_SERVER` to the laptop Wi-Fi IP.
 - CPU-only machine: keep `onnxruntime`; do not install `onnxruntime-gpu`.

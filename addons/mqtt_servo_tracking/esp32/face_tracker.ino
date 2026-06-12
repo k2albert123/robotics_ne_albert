@@ -35,10 +35,10 @@ const int SERVO_CENTER_ANGLE = 90;
 const int SERVO_MIN_PULSE_US = 500;
 const int SERVO_MAX_PULSE_US = 2400;
 
-const float TRACK_STEP = 0.35f;
+const float TRACK_STEP = 0.55f;
 const float SCAN_STEP = 0.50f;
 
-const unsigned long TRACK_INTERVAL_MS = 18;
+const unsigned long TRACK_INTERVAL_MS = 14;
 const unsigned long SCAN_INTERVAL_MS = 24;
 const unsigned long COMMAND_TIMEOUT_MS = 800;
 

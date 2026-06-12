@@ -22,7 +22,8 @@ broker.hivemq.com
 Ports:
 
 - `1883` - plain MQTT for Python and ESP8266.
-- `8000` - MQTT over WebSockets for the browser dashboard (`/mqtt` path).
+- `8884` - secure MQTT over WebSockets for the browser dashboard (`/mqtt` path).
+- `8000` - non-TLS MQTT over WebSockets fallback for local-only testing.
 
 Movement topic:
 
@@ -141,7 +142,7 @@ dashboard/index.html
 The dashboard connects directly to MQTT over WebSockets:
 
 ```text
-ws://broker.hivemq.com:8000/mqtt
+wss://broker.hivemq.com:8884/mqtt
 ```
 
 It subscribes to both the movement topic and the dashboard status topic. If your broker uses a different WebSocket port or path, change it in the dashboard input field and reconnect.
@@ -177,7 +178,9 @@ The dashboard uses status JSON as the authoritative display state. Raw movement 
    - `SERVO_MIN_PULSE_US`
    - `SERVO_MAX_PULSE_US`
    - `TRACK_STEP`
+   - `TRACK_INTERVAL_MS`
    - `SCAN_STEP`
+   - `SCAN_INTERVAL_MS`
    - `REVERSE_SERVO`
 
 5. Install Arduino libraries:
@@ -219,6 +222,8 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
 - Drop to `--camera-width 640 --camera-height 360` on CPU systems that cannot keep up with 960x540.
 - Increase `--detect-every` or `--recognize-every` to reduce CPU load.
 - Keep `--locked-max-faces` above `1` when demonstrating multiple-face robustness.
+- ESP tracking uses `TRACK_STEP 0.55` and `TRACK_INTERVAL_MS 14` for faster live LEFT/RIGHT movement.
+- SCAN search speed is intentionally unchanged at `SCAN_STEP 0.50` and `SCAN_INTERVAL_MS 24`.
 - `--center-zone-ratio` defines the acceptable center band; the default `0.36` keeps the servo still inside roughly the middle third of the frame.
 - Increase `--center-zone-ratio` or `--deadzone-px` if the servo keeps moving near center.
 - Increase `--command-hold-sec` if short command blips still show up.
@@ -236,6 +241,6 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
   - `TCP probe ... failed`: the Wi-Fi network is blocking outbound MQTT port `1883`, the broker is unreachable from the board, or signal/power is unstable.
   - `TCP probe ... ok` but MQTT still fails: check broker settings, client ID, and whether the broker requires authentication.
 - If public brokers are blocked, run Mosquitto on the laptop and set `MQTT_SERVER` to the laptop Wi-Fi IP address, for example `192.168.2.199`.
-- Dashboard stays offline: confirm MQTT over WebSockets is enabled at `ws://broker.hivemq.com:8000/mqtt`.
+- Dashboard stays offline: confirm MQTT over WebSockets is enabled at `wss://broker.hivemq.com:8884/mqtt`.
 - Recognizer is slow on CPU: lower camera resolution in `recognize_mqtt.py`.
 - Known faces show as unknown: enroll more samples or increase the recognition threshold with `+`.

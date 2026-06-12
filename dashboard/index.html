@@ -359,7 +359,7 @@
         <header>
             <div>
                 <h1>Face Lock Ops</h1>
-                <div class="subtitle">vision/Dieudonne/ne - MQTT telemetry and servo movement</div>
+                <div id="namespaceSubtitle" class="subtitle">vision/Dieudonne/ne - MQTT telemetry and servo movement</div>
             </div>
             <div id="connectionPill" class="status-pill connecting">
                 <span class="dot"></span>
@@ -428,7 +428,7 @@
                 <div class="controls">
                     <label>
                         MQTT WebSocket URL
-                        <input id="wsUrlInput" type="text" value="ws://broker.hivemq.com:8000/mqtt">
+                        <input id="wsUrlInput" type="text" value="wss://broker.hivemq.com:8884/mqtt">
                     </label>
                     <label>
                         Movement topic
@@ -469,10 +469,18 @@
     <script>
         const MAX_LOG_ITEMS = 90;
         const STALE_AFTER_MS = 1800;
+        const DASHBOARD_CONFIG = {
+            brokerHost: "broker.hivemq.com",
+            websocketUrl: "wss://broker.hivemq.com:8884/mqtt",
+            movementTopic: "vision/Dieudonne/ne/movement",
+            statusTopic: "vision/Dieudonne/ne/status",
+            namespace: "vision/Dieudonne/ne",
+        };
 
         const els = {
             pill: document.getElementById("connectionPill"),
             connectionText: document.getElementById("connectionText"),
+            namespaceSubtitle: document.getElementById("namespaceSubtitle"),
             lastSeen: document.getElementById("lastSeen"),
             movementValue: document.getElementById("movementValue"),
             facePointer: document.getElementById("facePointer"),
@@ -512,8 +520,15 @@
 
         let client = null;
         let messageCount = 0;
-        let movementTopic = els.movementTopicInput.value;
-        let statusTopic = els.statusTopicInput.value;
+        els.namespaceSubtitle.textContent = `${DASHBOARD_CONFIG.namespace} - ${DASHBOARD_CONFIG.brokerHost} WebSocket telemetry`;
+        els.wsUrlInput.value = DASHBOARD_CONFIG.websocketUrl;
+        els.movementTopicInput.value = DASHBOARD_CONFIG.movementTopic;
+        els.statusTopicInput.value = DASHBOARD_CONFIG.statusTopic;
+        els.topicValue.textContent = DASHBOARD_CONFIG.statusTopic;
+        els.lastMovementTopic.textContent = DASHBOARD_CONFIG.movementTopic;
+
+        let movementTopic = DASHBOARD_CONFIG.movementTopic;
+        let statusTopic = DASHBOARD_CONFIG.statusTopic;
         let lastStatusSeq = -1;
         let lastStatusTimestamp = 0;
         let lastStatusReceivedAt = 0;
