@@ -1,7 +1,0 @@
-2026-02-06 14:58:52.647851 - FACE_LOCKED: Face locked: Dieudonne
-2026-02-06 14:59:04.433602 - HEAD_LEFT: Moved left by 15.0px
-2026-02-06 14:59:04.577795 - HEAD_LEFT: Moved left by 24.4px
-2026-02-06 14:59:04.702274 - HEAD_LEFT: Moved left by 40.4px
-2026-02-06 14:59:04.840231 - HEAD_LEFT: Moved left by 56.8px
-2026-02-06 14:59:04.948697 - HEAD_RIGHT: Moved right by 786.9px
-2026-02-06 14:59:04.948697 - SMILE: Smile detected (ratio: 2522.70)

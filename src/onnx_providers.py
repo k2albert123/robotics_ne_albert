@@ -40,6 +40,11 @@ def select_provider_interactive() -> List[str]:
     Interactively prompt user to select execution provider.
     Returns list of providers to use (fallback order).
     """
+    import os
+    # Allow forcing provider selection via environment variable for non-interactive runs.
+    forced = os.environ.get("FORCE_ONNX_PROVIDER", "").strip().lower()
+    if forced == "cpu":
+        return ["CPUExecutionProvider"]
     available = get_available_providers()
     
     if not available:

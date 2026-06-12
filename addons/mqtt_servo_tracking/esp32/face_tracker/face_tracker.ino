@@ -4,8 +4,12 @@
 #include <PubSubClient.h>
 #include <ESP32Servo.h>
 
-const char* WIFI_SSID = "EdNet";
-const char* WIFI_PASSWORD = "Huawei@123";
+// ------------------------
+// Wi-Fi
+// ------------------------
+const char* WIFI_SSID = "123456";
+const char* WIFI_PASSWORD = "12345678";
+
 // =========================
 // MQTT Settings
 // =========================
@@ -13,9 +17,12 @@ const char* MQTT_SERVER = "albertserver";
 const uint16_t MQTT_PORT = 1883;
 
 const char* MQTT_TOPIC = "vision/albert/ne/movement";
+const char* MQTT_STATUS_TOPIC = "vision/albert/ne/status";
 const char* MQTT_CLIENT_ID_PREFIX = "teamalpha-face-servo";
 const IPAddress MQTT_FALLBACK_IPS[] = {
   IPAddress(3, 126, 147, 153),
+
+
   IPAddress(3, 124, 122, 176),
   IPAddress(18, 197, 232, 142),
   IPAddress(3, 123, 123, 192),
@@ -153,6 +160,10 @@ MovementCommand parseCommand(String message) {
   return CMD_IDLE;
 }
 
+// Whether a remote recognizer has locked onto a face
+bool remote_locked = false;
+String remote_locked_target = "";
+
 // ======================================================
 // MQTT Callback
 // ======================================================
@@ -163,17 +174,50 @@ void mqttCallback(
     unsigned int length
 ) {
 
+  String topicStr = String(topic);
   String message = "";
 
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
 
+  // If this is a status payload (JSON), parse locked/target fields crudely
+  if (topicStr.equals(String(MQTT_STATUS_TOPIC))) {
+    int idx = message.indexOf("\"locked\"");
+    if (idx >= 0) {
+      int col = message.indexOf(':', idx);
+      if (col >= 0) {
+        int vstart = col + 1;
+        while (vstart < (int)message.length() && isSpace(message[vstart])) vstart++;
+        if (message.substring(vstart, vstart + 4) == "true") {
+          remote_locked = true;
+        } else {
+          remote_locked = false;
+        }
+      }
+    }
+    int tIdx = message.indexOf("\"target\"");
+    if (tIdx >= 0) {
+      int col = message.indexOf(':', tIdx);
+      if (col >= 0) {
+        int q1 = message.indexOf('"', col);
+        int q2 = message.indexOf('"', q1 + 1);
+        if (q1 >= 0 && q2 > q1) {
+          remote_locked_target = message.substring(q1 + 1, q2);
+        }
+      }
+    }
+    Serial.print("[MQTT][STATUS] locked=");
+    Serial.print(remote_locked ? "true" : "false");
+    Serial.print(" target=");
+    Serial.println(remote_locked_target);
+    return;
+  }
+
+  // Movement command (LEFT/RIGHT/CENTER/SCAN/IDLE)
   currentCommand = parseCommand(message);
-
   lastCommandAt = millis();
-
-  Serial.print("[MQTT] Received: ");
+  Serial.print("[MQTT] Received command: ");
   Serial.println(message);
 }
 
@@ -341,9 +385,12 @@ bool connectMqtt() {
   Serial.println("Connected");
 
   mqttClient.subscribe(MQTT_TOPIC);
+  mqttClient.subscribe(MQTT_STATUS_TOPIC);
 
-  Serial.print("[MQTT] Subscribed to: ");
+  Serial.print("[MQTT] Subscribed to movement: ");
   Serial.println(MQTT_TOPIC);
+  Serial.print("[MQTT] Subscribed to status: ");
+  Serial.println(MQTT_STATUS_TOPIC);
 
   return true;
 }

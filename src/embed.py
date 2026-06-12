@@ -15,7 +15,7 @@ p : print embedding stats to terminal
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import time
 import cv2
 import numpy as np
@@ -62,7 +62,8 @@ class ArcFaceEmbedderONNX:
             aligned_bgr = cv2.resize(aligned_bgr, (self.in_w, self.in_h))
         rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
         rgb = (rgb - 127.5) / 128.0
-        x = rgb[None, ...]
+        # model expects NCHW (1,3,H,W)
+        x = np.transpose(rgb, (2, 0, 1))[None, ...]
         return x.astype(np.float32)
 
     @staticmethod

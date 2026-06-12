@@ -1,4 +1,0 @@
-2026-02-06 11:16:02.028112 - FACE_LOCKED: Face locked: Dieudonne
-2026-02-06 11:16:02.290153 - SMILE: Smile detected (ratio: 46.60)
-2026-02-06 11:16:03.863006 - SMILE: Smile detected (ratio: 21.72)
-2026-02-06 11:16:04.749386 - SMILE: Smile detected (ratio: 54.54)

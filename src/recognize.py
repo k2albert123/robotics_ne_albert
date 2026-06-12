@@ -42,7 +42,7 @@ except Exception as e:
 from .haar_5pt import align_face_5pt
 from .onnx_providers import select_provider_interactive, get_provider_display_name
 
-DEFAULT_TARGET_NAME = "Dieudonne"
+DEFAULT_TARGET_NAME = "albert"
 
 # -------------------------
 # Data

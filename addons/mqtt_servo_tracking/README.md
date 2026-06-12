@@ -28,7 +28,7 @@ Ports:
 Movement topic:
 
 ```text
-vision/Dieudonne/ne/movement
+vision/albert/ne/movement
 ```
 
 Movement payloads:
@@ -44,7 +44,7 @@ The firmware also accepts `HOME` for manual recentering; the Python tracker does
 Dashboard status topic:
 
 ```text
-vision/Dieudonne/ne/status
+vision/albert/ne/status
 ```
 
 Status payload shape:

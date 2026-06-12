@@ -69,7 +69,7 @@ Required model files:
 5. Run local recognition:
 
    ```bash
-   python -m src.recognize --target-name Dieudonne
+   python -m src.recognize --target-name albert
    ```
 
    Controls:
@@ -127,13 +127,13 @@ python addons/mqtt_servo_tracking/recognize_mqtt.py
 
 Default MQTT settings:
 
-- Broker: `broker.hivemq.com`
+- Broker: `albertserver`
 - MQTT port: `1883`
 - Browser WebSocket URL: `wss://broker.hivemq.com:8884/mqtt`
-- Movement topic: `vision/Dieudonne/ne/movement`
-- Status topic: `vision/Dieudonne/ne/status`
+-- Movement topic: `vision/albert/ne/movement`
+-- Status topic: `vision/albert/ne/status`
 
-Movement payloads on `vision/Dieudonne/ne/movement`:
+Movement payloads on `vision/albert/ne/movement`:
 
 - `LEFT` - locked face is left of frame center.
 - `RIGHT` - locked face is right of frame center.
@@ -143,13 +143,13 @@ Movement payloads on `vision/Dieudonne/ne/movement`:
 
 The firmware also accepts `HOME` for manual recentering; the Python tracker does not publish it automatically.
 
-Dashboard JSON is published on `vision/Dieudonne/ne/status`, including movement, lock state, target name, face count, confidence, distance, raw and smoothed horizontal error, center-zone/deadzone values, FPS, timing, threshold, provider, resolution, and MQTT health.
+Dashboard JSON is published on `vision/albert/ne/status`, including movement, lock state, target name, face count, confidence, distance, raw and smoothed horizontal error, center-zone/deadzone values, FPS, timing, threshold, provider, resolution, and MQTT health.
 
 Useful addon flags:
 
-```bash
-python addons/mqtt_servo_tracking/recognize_mqtt.py --target-name Dieudonne --mqtt-broker broker.hivemq.com --mqtt-topic vision/Dieudonne/ne/movement --mqtt-status-topic vision/Dieudonne/ne/status --camera-width 960 --camera-height 540 --max-faces 5 --locked-max-faces 5 --detect-every 2 --recognize-every 3 --landmark-roi-width 224 --deadzone-px 70 --center-zone-ratio 0.36 --center-exit-hysteresis-px 45 --command-hold-sec 0.25 --scan-delay-sec 0.8 --reacquire-hold-sec 0.30 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
-```
+   ```bash
+   python addons/mqtt_servo_tracking/recognize_mqtt.py --target-name albert --mqtt-broker albertserver --mqtt-topic vision/albert/ne/movement --mqtt-status-topic vision/albert/ne/status --camera-width 960 --camera-height 540 --max-faces 5 --locked-max-faces 5 --detect-every 2 --recognize-every 3 --landmark-roi-width 224 --deadzone-px 70 --center-zone-ratio 0.36 --center-exit-hysteresis-px 45 --command-hold-sec 0.25 --scan-delay-sec 0.8 --reacquire-hold-sec 0.30 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
+   ```
 
 ## Recognize To Command Flow
 
@@ -217,8 +217,8 @@ wss://broker.hivemq.com:8884/mqtt
 
 It listens to:
 
-- `vision/Dieudonne/ne/movement`
-- `vision/Dieudonne/ne/status`
+- `vision/albert/ne/movement`
+- `vision/albert/ne/status`
 
 The JSON status topic is authoritative for the displayed command. The raw movement topic is used only as a fallback if status messages stop arriving, which prevents delayed MQTT movement messages from making the dashboard flicker between commands.
 
@@ -234,7 +234,7 @@ The dashboard connects via MQTT over secure WebSockets at `wss://broker.hivemq.c
 
    ```cpp
    MQTT_SERVER = "broker.hivemq.com";
-   MQTT_TOPIC = "vision/Dieudonne/ne/movement";
+   MQTT_TOPIC = "vision/albert/ne/movement";
    ```
 
 4. Adjust servo settings for your hardware:
@@ -307,7 +307,7 @@ Safety and stability checklist:
 For the final demonstration, record or present evidence for each case:
 
 - Enroll the authorized speaker and confirm `data/db/face_db.npz` plus `face_db.json` are created.
-- Run `recognize_mqtt.py --target-name Dieudonne` and lock the authorized speaker.
+- Run `recognize_mqtt.py --target-name albert` and lock the authorized speaker.
 - Move the speaker left and right; verify `LEFT`, `RIGHT`, and `CENTER` commands.
 - Add another face in frame; verify only the target speaker can drive the servo.
 - Temporarily occlude or leave the frame; verify `SCAN` starts only after `--scan-delay-sec`.

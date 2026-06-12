@@ -10,18 +10,18 @@
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         :root {
-            --bg: #11100d;
-            --surface: #f4f1e9;
-            --surface-2: #e7efeb;
-            --surface-3: #efe7dc;
-            --ink: #151515;
-            --muted: #64615a;
-            --line: rgba(21, 21, 21, 0.16);
-            --green: #18976f;
-            --amber: #c87f1f;
-            --red: #cf4646;
-            --blue: #376bc4;
-            --steel: #767c81;
+                --bg: #071029;
+                --surface: rgba(10,20,30,0.9);
+                --surface-2: rgba(12,36,48,0.9);
+                --surface-3: rgba(14,26,34,0.9);
+                --ink: #e6f0ff;
+                --muted: #9fb3c8;
+                --line: rgba(230, 240, 255, 0.06);
+                --green: #26c6a3;
+                --amber: #f6a53a;
+                --red: #ff6b6b;
+                --blue: #5ea0ff;
+                --steel: #7f8da0;
             --mono: "IBM Plex Mono", Consolas, monospace;
             --sans: Inter, system-ui, sans-serif;
             --radius: 8px;
@@ -358,8 +358,8 @@
     <main class="shell">
         <header>
             <div>
-                <h1>Face Lock Ops</h1>
-                <div id="namespaceSubtitle" class="subtitle">vision/Dieudonne/ne - MQTT telemetry and servo movement</div>
+                <h1>Face Lock Dashboard</h1>
+                    <div id="namespaceSubtitle" class="subtitle">vision/albert/ne - MQTT telemetry and servo movement</div>
             </div>
             <div id="connectionPill" class="status-pill connecting">
                 <span class="dot"></span>
@@ -432,11 +432,11 @@
                     </label>
                     <label>
                         Movement topic
-                        <input id="movementTopicInput" type="text" value="vision/Dieudonne/ne/movement">
+                        <input id="movementTopicInput" type="text" value="vision/albert/ne/movement">
                     </label>
                     <label>
                         Status topic
-                        <input id="statusTopicInput" type="text" value="vision/Dieudonne/ne/status">
+                        <input id="statusTopicInput" type="text" value="vision/albert/ne/status">
                     </label>
                     <button id="connectButton" type="button">Reconnect</button>
                 </div>
@@ -447,7 +447,7 @@
             <div class="panel warm">
                 <div class="panel-head">
                     <span>Event stream</span>
-                    <span id="topicValue">vision/Dieudonne/ne/status</span>
+                    <span id="topicValue">vision/albert/ne/status</span>
                 </div>
                 <div id="eventLog" class="event-log" role="log"></div>
             </div>
@@ -470,11 +470,11 @@
         const MAX_LOG_ITEMS = 90;
         const STALE_AFTER_MS = 1800;
         const DASHBOARD_CONFIG = {
-            brokerHost: "broker.hivemq.com",
-            websocketUrl: "wss://broker.hivemq.com:8884/mqtt",
-            movementTopic: "vision/Dieudonne/ne/movement",
-            statusTopic: "vision/Dieudonne/ne/status",
-            namespace: "vision/Dieudonne/ne",
+            brokerHost: "albertserver",
+            websocketUrl: "wss://albertserver:8884/mqtt",
+            movementTopic: "vision/albert/ne/movement",
+            statusTopic: "vision/albert/ne/status",
+            namespace: "vision/albert/ne",
         };
 
         const els = {

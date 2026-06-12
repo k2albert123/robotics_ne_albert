@@ -1,3 +1,0 @@
-2026-02-06 13:38:20.399309 - FACE_LOCKED: Face locked: Manene
-2026-02-06 13:38:22.235436 - SMILE: Smile detected (ratio: 19.40)
-2026-02-06 13:38:26.816643 - SMILE: Smile detected (ratio: 19.65)

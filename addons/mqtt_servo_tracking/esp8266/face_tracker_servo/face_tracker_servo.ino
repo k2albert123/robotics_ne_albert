@@ -4,14 +4,14 @@
 #include <Servo.h>
 
 // Wi-Fi settings
-const char* WIFI_SSID = "lol1";
-const char* WIFI_PASSWORD = "123456789q";
+const char* WIFI_SSID = "EdNet";
+const char* WIFI_PASSWORD = "Huawei@123";
 
 // MQTT settings
-const char* MQTT_SERVER = "broker.hivemq.com";
+const char* MQTT_SERVER = "albertserver";
 const uint16_t MQTT_PORT = 1883;
-const char* MQTT_TOPIC = "vision/Dieudonne/ne/movement";
-const char* MQTT_CLIENT_ID_PREFIX = "dieudonne";
+const char* MQTT_TOPIC = "vision/albert/ne/movement";
+const char* MQTT_CLIENT_ID_PREFIX = "albert";
 const IPAddress MQTT_FALLBACK_IPS[] = {
   IPAddress(3, 126, 147, 153),
   IPAddress(3, 124, 122, 176),
