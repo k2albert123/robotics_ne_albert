@@ -188,7 +188,7 @@ void mqttCallback(
       int col = message.indexOf(':', idx);
       if (col >= 0) {
         int vstart = col + 1;
-        while (vstart < (int)message.length() && isSpace(message[vstart])) vstart++;
+        while (vstart < (int)message.length() && isspace((unsigned char)message[vstart])) vstart++;
         if (message.substring(vstart, vstart + 4) == "true") {
           remote_locked = true;
         } else {
@@ -410,10 +410,18 @@ void handleServo() {
     currentCommand = CMD_IDLE;
   }
 
-  // ----------------------
+  // If idle and no remote lock, perform autonomous SCAN across sweep range
+  if (currentCommand == CMD_IDLE) {
+    if (!remote_locked) {
+      currentCommand = CMD_SCAN;
+    } else {
+      // remote locked and idle -> hold current servo angle
+      return;
+    }
+  }
+
   // CENTER means the face is centered, so hold the current servo angle.
-  // ----------------------
-  if (currentCommand == CMD_CENTER || currentCommand == CMD_IDLE) {
+  if (currentCommand == CMD_CENTER) {
     return;
   }
 
