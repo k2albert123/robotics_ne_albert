@@ -127,26 +127,28 @@ python addons/mqtt_servo_tracking/recognize_mqtt.py
 
 Default MQTT settings:
 
-- Broker: `157.173.101.159`
+- Broker: `broker.hivemq.com`
 - MQTT port: `1883`
-- Browser WebSocket URL: `ws://157.173.101.159:9001`
-- Movement topic: `vision/teamalpha/movement`
-- Status topic: `vision/teamalpha/status`
+- Browser WebSocket URL: `ws://broker.hivemq.com:8000/mqtt`
+- Movement topic: `vision/Dieudonne/ne/movement`
+- Status topic: `vision/Dieudonne/ne/status`
 
-Movement payloads on `vision/teamalpha/movement`:
+Movement payloads on `vision/Dieudonne/ne/movement`:
 
-- `LEFT`
-- `RIGHT`
-- `CENTER`
-- `SEARCH`
-- `IDLE`
+- `LEFT` - locked face is left of frame center.
+- `RIGHT` - locked face is right of frame center.
+- `CENTER` - locked face is centered; the servo holds its current angle.
+- `SEARCH` - locked face is missing, sweep the servo.
+- `IDLE` - no active face lock.
 
-Dashboard JSON is published on `vision/teamalpha/status`, including movement, lock state, target name, face count, horizontal error, FPS, threshold, and provider.
+The firmware also accepts `HOME` for manual recentering; the Python tracker does not publish it automatically.
+
+Dashboard JSON is published on `vision/Dieudonne/ne/status`, including movement, lock state, target name, face count, horizontal error, FPS, threshold, and provider.
 
 Useful addon flags:
 
 ```bash
-python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker 157.173.101.159 --mqtt-topic vision/teamalpha/movement --mqtt-status-topic vision/teamalpha/status --camera-width 640 --camera-height 480 --max-faces 3 --detect-every 2 --recognize-every 3 --deadzone-px 80 --center-exit-hysteresis-px 30 --command-hold-sec 0.25 --search-delay-sec 0.8 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
+python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker broker.hivemq.com --mqtt-topic vision/Dieudonne/ne/movement --mqtt-status-topic vision/Dieudonne/ne/status --camera-width 1280 --camera-height 720 --max-faces 3 --detect-every 2 --recognize-every 3 --deadzone-px 80 --center-exit-hysteresis-px 30 --command-hold-sec 0.25 --search-delay-sec 0.8 --reacquire-hold-sec 0.30 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
 ```
 
 ## Dashboard
@@ -160,19 +162,19 @@ dashboard/index.html
 The dashboard is a static HTML file. It uses MQTT over WebSockets and defaults to:
 
 ```text
-ws://157.173.101.159:9001
+ws://broker.hivemq.com:8000/mqtt
 ```
 
 It listens to:
 
-- `vision/teamalpha/movement`
-- `vision/teamalpha/status`
+- `vision/Dieudonne/ne/movement`
+- `vision/Dieudonne/ne/status`
 
 The JSON status topic is authoritative for the displayed command. The raw movement topic is used only as a fallback if status messages stop arriving, which prevents delayed MQTT movement messages from making the dashboard flicker between commands.
 
 The page includes editable connection fields, so you can change the WebSocket URL or topics without editing the file.
 
-The broker must expose MQTT over WebSockets on port `9001` for the dashboard to connect. Plain MQTT port `1883` is for Python and ESP8266 clients, not browsers.
+The dashboard connects via MQTT over WebSockets at `ws://broker.hivemq.com:8000/mqtt`. Plain MQTT port `1883` is for Python and ESP8266/ESP32 clients, not browsers.
 
 ## ESP8266 Servo Setup
 
@@ -181,8 +183,8 @@ The broker must expose MQTT over WebSockets on port `9001` for the dashboard to 
 3. Confirm:
 
    ```cpp
-   MQTT_SERVER = "157.173.101.159";
-   MQTT_TOPIC = "vision/teamalpha/movement";
+   MQTT_SERVER = "broker.hivemq.com";
+   MQTT_TOPIC = "vision/Dieudonne/ne/movement";
    ```
 
 4. Adjust servo settings for your hardware:
@@ -226,6 +228,6 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
 
 - Empty database: run `python -m src.enroll` or `python -m src.rebuild_db`.
 - Camera not available: check the camera index in the recognizer code if your webcam is not device `1`.
-- Dashboard offline: confirm the broker exposes MQTT over WebSockets at `ws://157.173.101.159:9001`.
+- Dashboard offline: confirm the broker exposes MQTT over WebSockets at `ws://broker.hivemq.com:8000/mqtt`.
 - ESP8266 not moving: confirm Wi-Fi credentials, broker address, topic, and Serial Monitor output.
 - CPU-only machine: keep `onnxruntime`; do not install `onnxruntime-gpu`.

@@ -64,7 +64,6 @@ class FaceDet:
     score: float
     kps: np.ndarray # (5,2) float32 in FULL-frame coords
 
-@dataclass
 class ActionType(Enum):
     FACE_LOCKED = auto()
     FACE_LOST = auto()
@@ -560,9 +559,9 @@ MOVEMENT_RIGHT = "RIGHT"
 MOVEMENT_CENTER = "CENTER"
 MOVEMENT_SEARCH = "SEARCH"
 MOVEMENT_IDLE = "IDLE"
-DEFAULT_MQTT_BROKER = "157.173.101.159"
-DEFAULT_MOVEMENT_TOPIC = "vision/teamalpha/movement"
-DEFAULT_STATUS_TOPIC = "vision/teamalpha/status"
+DEFAULT_MQTT_BROKER = "broker.hivemq.com"
+DEFAULT_MOVEMENT_TOPIC = "vision/Dieudonne/ne/movement"
+DEFAULT_STATUS_TOPIC = "vision/Dieudonne/ne/status"
 
 
 def compute_face_error_x(kps: np.ndarray, frame_width: int) -> float:
@@ -754,6 +753,12 @@ def parse_args() -> argparse.Namespace:
         help="Delay before sending SEARCH after the locked face is temporarily lost.",
     )
     parser.add_argument(
+        "--reacquire-hold-sec",
+        type=float,
+        default=0.30,
+        help="Short pause after SEARCH finds the locked face again before tracking resumes.",
+    )
+    parser.add_argument(
         "--mqtt-min-interval",
         type=float,
         default=0.15,
@@ -766,8 +771,8 @@ def parse_args() -> argparse.Namespace:
         help="Minimum seconds between dashboard status MQTT messages.",
     )
     parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index.")
-    parser.add_argument("--camera-width", type=int, default=640, help="Requested camera width.")
-    parser.add_argument("--camera-height", type=int, default=480, help="Requested camera height.")
+    parser.add_argument("--camera-width", type=int, default=1280, help="Requested camera width.")
+    parser.add_argument("--camera-height", type=int, default=720, help="Requested camera height.")
     parser.add_argument("--max-faces", type=int, default=3, help="Maximum faces to detect when unlocked.")
     parser.add_argument("--locked-max-faces", type=int, default=1, help="Maximum faces to detect while locked.")
     parser.add_argument("--detect-every", type=int, default=2, help="Run Haar/FaceMesh detection every N frames.")
@@ -918,6 +923,7 @@ def main():
     args.error_smooth_alpha = float(max(0.01, min(1.0, args.error_smooth_alpha)))
     args.command_confirm_frames = int(max(1, args.command_confirm_frames))
     args.search_delay_sec = float(max(0.0, args.search_delay_sec))
+    args.reacquire_hold_sec = float(max(0.0, args.reacquire_hold_sec))
     args.mqtt_min_interval = float(max(0.0, args.mqtt_min_interval))
     args.mqtt_status_min_interval = float(max(0.0, args.mqtt_status_min_interval))
     args.center_exit_hysteresis_px = float(max(0.0, args.center_exit_hysteresis_px))
@@ -983,6 +989,10 @@ def main():
     print(f"Camera resolution: {actual_width}x{actual_height}")
     if actual_width != camera_width or actual_height != camera_height:
         print(f"  (Requested {camera_width}x{camera_height}, camera using {actual_width}x{actual_height})")
+
+    window_name = "Face Recognition - Press 'q' to quit"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, int(camera_width), int(camera_height))
     
     print(f"\nRecognize (multi-face) - Using {provider_name}")
     print("Controls: q=quit, r=reload DB, +/- threshold, d=debug overlay")
@@ -1007,6 +1017,7 @@ def main():
     pending_track_command: Optional[str] = None
     pending_track_count = 0
     face_missing_since: Optional[float] = None
+    reacquire_hold_until = 0.0
     mqtt_publisher: Optional[MqttMovementPublisher] = None
     status_seq = 0
     frame_index = 0
@@ -1101,6 +1112,7 @@ def main():
                 pending_track_command = None
                 pending_track_count = 0
                 face_missing_since = None
+                reacquire_hold_until = 0.0
                 if mqtt_publisher is not None:
                     mqtt_publisher.publish(MOVEMENT_IDLE, force=True)
             
@@ -1222,8 +1234,21 @@ def main():
 
             # Movement command for ESP servo
             if face_lock and locked_face_found and locked_face_kps is not None:
+                was_missing = face_missing_since is not None
+                was_searching = (
+                    was_missing
+                    and (current_time - face_missing_since) >= args.search_delay_sec
+                )
                 face_missing_since = None
                 raw_error_x = compute_face_error_x(locked_face_kps, frame_width=w)
+
+                if was_searching:
+                    filtered_error_x = raw_error_x
+                    stable_track_command = MOVEMENT_CENTER
+                    pending_track_command = None
+                    pending_track_count = 0
+                    reacquire_hold_until = current_time + args.reacquire_hold_sec
+
                 if filtered_error_x is None:
                     filtered_error_x = raw_error_x
                 else:
@@ -1233,36 +1258,42 @@ def main():
                     )
                 movement_error_x = float(filtered_error_x)
 
-                desired_track_command = command_from_error_with_hysteresis(
-                    error_x=movement_error_x,
-                    deadzone_px=args.deadzone_px,
-                    center_exit_hysteresis_px=args.center_exit_hysteresis_px,
-                    previous_command=stable_track_command,
-                )
-
-                if desired_track_command == stable_track_command:
-                    pending_track_command = None
-                    pending_track_count = 0
+                if current_time < reacquire_hold_until:
+                    movement_command = MOVEMENT_IDLE
                 else:
-                    if pending_track_command == desired_track_command:
-                        pending_track_count += 1
-                    else:
-                        pending_track_command = desired_track_command
-                        pending_track_count = 1
-                    if pending_track_count >= args.command_confirm_frames:
-                        stable_track_command = desired_track_command
+                    reacquire_hold_until = 0.0
+                    desired_track_command = command_from_error_with_hysteresis(
+                        error_x=movement_error_x,
+                        deadzone_px=args.deadzone_px,
+                        center_exit_hysteresis_px=args.center_exit_hysteresis_px,
+                        previous_command=stable_track_command,
+                    )
+
+                    if desired_track_command == stable_track_command:
                         pending_track_command = None
                         pending_track_count = 0
+                    else:
+                        if pending_track_command == desired_track_command:
+                            pending_track_count += 1
+                        else:
+                            pending_track_command = desired_track_command
+                            pending_track_count = 1
+                        if pending_track_count >= args.command_confirm_frames:
+                            stable_track_command = desired_track_command
+                            pending_track_command = None
+                            pending_track_count = 0
 
-                movement_command = stable_track_command
+                    movement_command = stable_track_command
             elif face_lock:
                 if face_missing_since is None:
                     face_missing_since = current_time
                 lost_for = current_time - face_missing_since
                 if lost_for < args.search_delay_sec:
-                    movement_command = MOVEMENT_CENTER
+                    movement_command = MOVEMENT_IDLE
                 else:
                     movement_command = MOVEMENT_SEARCH
+                pending_track_command = None
+                pending_track_count = 0
                 movement_error_x = 0.0
             else:
                 filtered_error_x = None
@@ -1270,6 +1301,7 @@ def main():
                 pending_track_command = None
                 pending_track_count = 0
                 face_missing_since = None
+                reacquire_hold_until = 0.0
                 movement_command = MOVEMENT_IDLE
                 movement_error_x = 0.0
 
@@ -1351,7 +1383,7 @@ def main():
                 draw_text_box(vis, status_text, (12, y_offset), 0.75, (200, 255, 200), (0, 40, 0), 0.7, 6, cv2.FONT_HERSHEY_DUPLEX)
                 y_offset += 40
             
-            cv2.imshow("Face Recognition - Press 'q' to quit", vis)
+            cv2.imshow(window_name, vis)
 
             # Handle key presses
             key_raw = cv2.waitKey(1)
@@ -1411,6 +1443,7 @@ def main():
                     pending_track_command = None
                     pending_track_count = 0
                     face_missing_since = None
+                    reacquire_hold_until = 0.0
                     if mqtt_publisher is not None:
                         mqtt_publisher.publish(MOVEMENT_IDLE, force=True)
                 # Only allow locking if we have a selected recognized face
@@ -1434,6 +1467,7 @@ def main():
                     pending_track_command = None
                     pending_track_count = 0
                     face_missing_since = None
+                    reacquire_hold_until = 0.0
                     print(f"[FaceLock] Locked onto {name} (face {selected_face_index + 1 if selected_face_index is not None else '?'})")
                     # Keep selection for visual feedback, but locking is done
     finally:

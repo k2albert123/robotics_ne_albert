@@ -16,32 +16,34 @@ The original `src/recognize.py` remains separate.
 Default broker:
 
 ```text
-157.173.101.159
+broker.hivemq.com
 ```
 
 Ports:
 
 - `1883` - plain MQTT for Python and ESP8266.
-- `9001` - MQTT over WebSockets for the browser dashboard.
+- `8000` - MQTT over WebSockets for the browser dashboard (`/mqtt` path).
 
 Movement topic:
 
 ```text
-vision/teamalpha/movement
+vision/Dieudonne/ne/movement
 ```
 
 Movement payloads:
 
 - `LEFT` - locked face is left of frame center.
 - `RIGHT` - locked face is right of frame center.
-- `CENTER` - locked face is centered.
+- `CENTER` - locked face is centered; the servo holds its current angle.
 - `SEARCH` - locked face is missing, sweep the servo.
 - `IDLE` - no active face lock.
+
+The firmware also accepts `HOME` for manual recentering; the Python tracker does not publish it automatically.
 
 Dashboard status topic:
 
 ```text
-vision/teamalpha/status
+vision/Dieudonne/ne/status
 ```
 
 Status payload shape:
@@ -80,7 +82,7 @@ python addons/mqtt_servo_tracking/recognize_mqtt.py
 Optional flags:
 
 ```bash
-python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker 157.173.101.159 --mqtt-port 1883 --mqtt-topic vision/teamalpha/movement --mqtt-status-topic vision/teamalpha/status --camera-width 640 --camera-height 480 --max-faces 3 --detect-every 2 --recognize-every 3 --deadzone-px 80 --center-exit-hysteresis-px 30 --error-smooth-alpha 0.35 --command-hold-sec 0.25 --search-delay-sec 0.8 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
+python addons/mqtt_servo_tracking/recognize_mqtt.py --mqtt-broker broker.hivemq.com --mqtt-port 1883 --mqtt-topic vision/Dieudonne/ne/movement --mqtt-status-topic vision/Dieudonne/ne/status --camera-width 1280 --camera-height 720 --max-faces 3 --detect-every 2 --recognize-every 3 --deadzone-px 80 --center-exit-hysteresis-px 30 --error-smooth-alpha 0.35 --command-hold-sec 0.25 --search-delay-sec 0.8 --reacquire-hold-sec 0.30 --command-confirm-frames 2 --mqtt-min-interval 0.15 --mqtt-status-min-interval 0.25
 ```
 
 Use `--disable-mqtt` to run the recognizer without publishing MQTT messages.
@@ -96,7 +98,7 @@ dashboard/index.html
 The dashboard connects directly to MQTT over WebSockets:
 
 ```text
-ws://157.173.101.159:9001
+ws://broker.hivemq.com:8000/mqtt
 ```
 
 It subscribes to both the movement topic and the dashboard status topic. If your broker uses a different WebSocket port or path, change it in the dashboard input field and reconnect.
@@ -118,9 +120,9 @@ The dashboard uses status JSON as the authoritative display state. Raw movement 
 3. Confirm the MQTT settings:
 
    ```cpp
-   const char* MQTT_SERVER = "157.173.101.159";
+   const char* MQTT_SERVER = "broker.hivemq.com";
    const uint16_t MQTT_PORT = 1883;
-   const char* MQTT_TOPIC = "vision/teamalpha/movement";
+   const char* MQTT_TOPIC = "vision/Dieudonne/ne/movement";
    ```
 
 4. Tune the servo constants:
@@ -153,7 +155,7 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
 ## Tuning
 
 - Use `--profile` to show CPU timing for detection, recognition, and full frame time.
-- Keep CPU systems at `--camera-width 640 --camera-height 480` unless the machine has headroom.
+- Drop to `--camera-width 640 --camera-height 360` on CPU systems that cannot keep up with 1280x720.
 - Increase `--detect-every` or `--recognize-every` to reduce CPU load.
 - Lower `--max-faces` when you only need to lock one or two people.
 - Increase `--deadzone-px` if the servo keeps moving near center.
@@ -166,6 +168,6 @@ powershell -ExecutionPolicy Bypass -File addons/mqtt_servo_tracking/esp8266/uplo
 ## Troubleshooting
 
 - Python publishes but ESP8266 does not move: check ESP Serial Monitor, Wi-Fi credentials, broker, topic, and servo wiring.
-- Dashboard stays offline: confirm MQTT over WebSockets is enabled at `ws://157.173.101.159:9001`.
+- Dashboard stays offline: confirm MQTT over WebSockets is enabled at `ws://broker.hivemq.com:8000/mqtt`.
 - Recognizer is slow on CPU: lower camera resolution in `recognize_mqtt.py`.
 - Known faces show as unknown: enroll more samples or increase the recognition threshold with `+`.

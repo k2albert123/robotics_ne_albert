@@ -54,7 +54,6 @@ class FaceDet:
     score: float
     kps: np.ndarray # (5,2) float32 in FULL-frame coords
 
-@dataclass
 class ActionType(Enum):
     FACE_LOCKED = auto()
     FACE_LOST = auto()
@@ -548,8 +547,8 @@ def draw_text_box(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CPU-friendly real-time face recognition and face locking.")
     parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index.")
-    parser.add_argument("--camera-width", type=int, default=640, help="Requested camera width.")
-    parser.add_argument("--camera-height", type=int, default=480, help="Requested camera height.")
+    parser.add_argument("--camera-width", type=int, default=1280, help="Requested camera width.")
+    parser.add_argument("--camera-height", type=int, default=720, help="Requested camera height.")
     parser.add_argument("--max-faces", type=int, default=3, help="Maximum faces to detect when unlocked.")
     parser.add_argument("--locked-max-faces", type=int, default=1, help="Maximum faces to detect while locked.")
     parser.add_argument("--detect-every", type=int, default=2, help="Run Haar/FaceMesh detection every N frames.")
@@ -731,6 +730,10 @@ def main():
     print(f"Camera resolution: {actual_width}x{actual_height}")
     if actual_width != camera_width or actual_height != camera_height:
         print(f"  (Requested {camera_width}x{camera_height}, camera using {actual_width}x{actual_height})")
+
+    window_name = "Face Recognition - Press 'q' to quit"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, int(camera_width), int(camera_height))
     
     print(f"\nRecognize (multi-face) - Using {provider_name}")
     print("Controls: q=quit, r=reload DB, +/- threshold, d=debug overlay")
@@ -964,7 +967,7 @@ def main():
                 draw_text_box(vis, status_text, (12, y_offset), 0.75, (200, 255, 200), (0, 40, 0), 0.7, 6, cv2.FONT_HERSHEY_DUPLEX)
                 y_offset += 40
             
-            cv2.imshow("Face Recognition - Press 'q' to quit", vis)
+            cv2.imshow(window_name, vis)
 
             # Handle key presses
             key_raw = cv2.waitKey(1)
